@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect } from "react";
 
-/* ================= LEAK LAB — preflop GTO trainer =================
+/* ============ LEAK LAB — practical live-strategy trainer ============
+   Real players, real spots: drill vs opponent archetypes, not a solver.
    All ranges are precomputed lookup tables: zero solver load on device.
-   Heads-up first; 6-max included. GTO baseline scoring (exploit layer = v2).
+   GTO is the internal grading baseline; the product voice is practical.
 ==================================================================== */
 
 const RC = { 14: "A", 13: "K", 12: "Q", 11: "J", 10: "T", 9: "9", 8: "8", 7: "7", 6: "6", 5: "5", 4: "4", 3: "3", 2: "2" };
@@ -543,12 +544,18 @@ function leakKey(stage, best, chosen) {
 
 /* ---------------- Opponent profiles ---------------- */
 const PROFILES = [
-  { id: "gto", name: "GTO Bot", icon: "⚖️", desc: "Balanced, textbook frequencies", rfi: 1.0, cbet: 0.68, vsRaise: { f: 0.38, c: 0.47, r: 0.15 }, vs3: { f: 0.52, c: 0.36, r: 0.12 }, vsBet: { f: 0.4, c: 0.48, r: 0.12 } },
-  { id: "nit", name: "Nit", icon: "🪨", desc: "Ultra-tight — waits for premiums, folds a lot", rfi: 0.65, cbet: 0.55, vsRaise: { f: 0.58, c: 0.34, r: 0.08 }, vs3: { f: 0.7, c: 0.24, r: 0.06 }, vsBet: { f: 0.52, c: 0.4, r: 0.08 } },
-  { id: "tag", name: "TAG", icon: "🎯", desc: "Tight-aggressive reg — solid ranges, picks spots", rfi: 0.95, cbet: 0.66, vsRaise: { f: 0.45, c: 0.42, r: 0.13 }, vs3: { f: 0.55, c: 0.34, r: 0.11 }, vsBet: { f: 0.44, c: 0.45, r: 0.11 } },
-  { id: "lag", name: "LAG", icon: "🔥", desc: "Loose-aggressive — wide ranges, relentless pressure", rfi: 1.35, cbet: 0.8, vsRaise: { f: 0.28, c: 0.46, r: 0.26 }, vs3: { f: 0.42, c: 0.38, r: 0.2 }, vsBet: { f: 0.32, c: 0.5, r: 0.18 } },
-  { id: "station", name: "Station", icon: "📞", desc: "Calling station — calls almost anything, rarely folds or raises", rfi: 1.15, cbet: 0.45, vsRaise: { f: 0.14, c: 0.8, r: 0.06 }, vs3: { f: 0.25, c: 0.68, r: 0.07 }, vsBet: { f: 0.12, c: 0.83, r: 0.05 } },
-  { id: "maniac", name: "Maniac", icon: "💣", desc: "Hyper-aggro — raises constantly with anything", rfi: 1.7, cbet: 0.9, vsRaise: { f: 0.12, c: 0.52, r: 0.36 }, vs3: { f: 0.2, c: 0.45, r: 0.35 }, vsBet: { f: 0.2, c: 0.5, r: 0.3 } },
+  { id: "gto", name: "GTO Bot", icon: "⚖️", desc: "Balanced, textbook frequencies", rfi: 1.0, cbet: 0.68, vsRaise: { f: 0.38, c: 0.47, r: 0.15 }, vs3: { f: 0.52, c: 0.36, r: 0.12 }, vsBet: { f: 0.4, c: 0.48, r: 0.12 },
+    spot: "Rare in a live room. Treat a quiet, competent unknown this way until they show you otherwise — then re-type them." },
+  { id: "nit", name: "Nit", icon: "🪨", desc: "Ultra-tight — waits for premiums, folds a lot", rfi: 0.65, cbet: 0.55, vsRaise: { f: 0.58, c: 0.34, r: 0.08 }, vs3: { f: 0.7, c: 0.24, r: 0.06 }, vsBet: { f: 0.52, c: 0.4, r: 0.08 },
+    spot: "Neat chip stacks, an hour of folding, never rebuys deep. When they finally raise it's the top of the deck — believe them and fold hands that look pretty." },
+  { id: "tag", name: "TAG", icon: "🎯", desc: "Tight-aggressive reg — solid ranges, picks spots", rfi: 0.95, cbet: 0.66, vsRaise: { f: 0.45, c: 0.42, r: 0.13 }, vs3: { f: 0.55, c: 0.34, r: 0.11 }, vsBet: { f: 0.44, c: 0.45, r: 0.11 },
+    spot: "Plays few hands but plays them with a plan — quick folds, deliberate raises, watches the action even when they're out. Buys in for the max." },
+  { id: "lag", name: "LAG", icon: "🔥", desc: "Loose-aggressive — wide ranges, relentless pressure", rfi: 1.35, cbet: 0.8, vsRaise: { f: 0.28, c: 0.46, r: 0.26 }, vs3: { f: 0.42, c: 0.38, r: 0.2 }, vsBet: { f: 0.32, c: 0.5, r: 0.18 },
+    spot: "In every other pot, isolating limpers, 3-betting light — but it's targeted: position, pressure, the soft seats. The difference from a Maniac is the picking of spots." },
+  { id: "station", name: "Station", icon: "📞", desc: "Calling station — calls almost anything, rarely folds or raises", rfi: 1.15, cbet: 0.45, vsRaise: { f: 0.14, c: 0.8, r: 0.06 }, vs3: { f: 0.25, c: 0.68, r: 0.07 }, vsBet: { f: 0.12, c: 0.83, r: 0.05 },
+    spot: "Calls \"to keep you honest,\" can't fold a pair or a draw, almost never raises. The one time they do raise, it's the nuts — that's the most reliable tell in live poker." },
+  { id: "maniac", name: "Maniac", icon: "💣", desc: "Hyper-aggro — raises constantly with anything", rfi: 1.7, cbet: 0.9, vsRaise: { f: 0.12, c: 0.52, r: 0.36 }, vs3: { f: 0.2, c: 0.45, r: 0.35 }, vsBet: { f: 0.2, c: 0.5, r: 0.3 },
+    spot: "Straddles, raises dark, splashes chips with junk, stack swinging wildly. No patience and no plan — tighten up, wait for a real hand, and let them pay you off." },
 ];
 /* Plain-words summary of a profile's assumed ranges, for the detail view */
 function profDetail(p, mode) {
@@ -1369,6 +1376,135 @@ function upsertProfile(name) {
   store.set("ll_current", name);
 }
 
+/* ---------------- Leak tracking over time ----------------
+   Severity is EV lost per *opportunity* in the stage bucket where the leak can
+   happen — not per session and not per decision. A session that never reached a
+   river says nothing about river leaks, so it carries no weight for them rather
+   than counting as a clean zero. Without this, a session's spot mix reads as
+   improvement.
+
+   Sessions are irregular in both length and spacing, so the trend is a kernel
+   regression over calendar time with each session weighted by its own exposure:
+
+       f(t) = Σ K((t−tᵢ)/h)·vᵢ  /  Σ K((t−tᵢ)/h)·eᵢ
+
+   vᵢ = bb lost to the leak, eᵢ = opportunities faced, K = Gaussian. Dividing
+   weighted EV by weighted exposure (instead of averaging per-session rates) is
+   what keeps a 12-spot session from outvoting a 300-spot one — it's a pooled
+   rate, the correct way to combine rates of unequal sample size.
+
+   h adapts per point: it widens until KERNEL_SUPPORT opportunities are in
+   reach, so dense stretches keep resolution and sparse ones borrow from further
+   out instead of drawing noise. Each point is then shrunk toward the all-time
+   rate in proportion to how little support it has, so one short bad session
+   can't spike the curve. */
+const LEAK_BUCKET = { vs3bet: "pressure" }; // LEAKS[].drill → byStage key; the rest are identity
+function bucketOf(key) {
+  const d = LEAKS[key] && LEAKS[key].drill;
+  return d ? LEAK_BUCKET[d] || d : null;
+}
+/* opps values are {n, good} per stage; the earliest records stored bare numbers. */
+const oppCount = (o) => (typeof o === "number" ? o : o && o.n ? o.n : 0);
+const KERNEL_SUPPORT = 60; // opportunities a smoothing window reaches for
+const SHRINK = 25;         // pseudo-opportunities pulling thin points to the all-time rate
+const GRID = 40;           // smoothed points drawn across the span
+
+/* One observation per session that actually faced this leak's spot type. */
+function leakObs(recs, key) {
+  const b = bucketOf(key);
+  if (!b) return [];
+  const out = [];
+  for (const r of recs || []) {
+    if (!r || !r.t || !r.opps) continue; // records banked before leak tracking existed
+    const e = oppCount(r.opps[b]);
+    if (e <= 0) continue;
+    const L = r.leaks && r.leaks[key];
+    out.push({ t: r.t, e, v: L ? L.ev : 0, n: L ? L.n : 0, live: !!r.live });
+  }
+  return out.sort((a, b2) => a.t - b2.t);
+}
+
+/* Then-vs-now on equal evidence: split the sessions into two halves holding the
+   same number of opportunities (splitting a session across the boundary
+   proportionally) and pool each side. Reading the smoothed curve's endpoints
+   instead would inherit kernel boundary bias — with one-sided support, a short
+   session sitting on either end swings the headline number hard. Equal-exposure
+   halves are immune to that and are honest to state: first N spots vs last N. */
+function halves(obs, totE, base) {
+  const mid = totE / 2;
+  let acc = 0, v0 = 0, e0 = 0, v1 = 0, e1 = 0;
+  for (const o of obs) {
+    const early = Math.min(o.e, Math.max(0, mid - acc));
+    const rate = o.e > 0 ? o.v / o.e : 0;
+    v0 += rate * early; e0 += early;
+    v1 += rate * (o.e - early); e1 += o.e - early;
+    acc += o.e;
+  }
+  return {
+    early: (v0 + SHRINK * base) / (e0 + SHRINK),
+    late: (v1 + SHRINK * base) / (e1 + SHRINK),
+    halfE: Math.round(mid),
+  };
+}
+
+function leakTrend(recs, key) {
+  const obs = leakObs(recs, key);
+  if (!obs.length) return null;
+  let totV = 0, totE = 0, totN = 0;
+  for (const o of obs) { totV += o.v; totE += o.e; totN += o.n; }
+  const base = totE > 0 ? totV / totE : 0; // all-time rate, and the shrink target
+  const t0 = obs[0].t, t1 = obs[obs.length - 1].t, span = t1 - t0;
+  const out = { obs, curve: [], base, totV, totE, totN, span, early: base, late: base, halfE: Math.round(totE / 2), maxSup: 0 };
+  if (obs.length < 2 || span <= 0) return out;
+  Object.assign(out, halves(obs, totE, base));
+
+  const hMin = Math.max(span / 50, 60000); // guards h→0 when sessions share a timestamp
+  const hRef = Math.max(span / 12, hMin);  // fixed window for "is there real data near here?"
+  for (let g = 0; g < GRID; g++) {
+    const t = t0 + (span * g) / (GRID - 1);
+    // Adaptive bandwidth: reach outward until enough exposure is within range.
+    const near = obs.map((o) => ({ d: Math.abs(t - o.t), e: o.e })).sort((a, b2) => a.d - b2.d);
+    let acc = 0, h = hMin;
+    for (const x of near) { h = Math.max(x.d, hMin); acc += x.e; if (acc >= KERNEL_SUPPORT) break; }
+    let sv = 0, se = 0, sup = 0;
+    for (const o of obs) {
+      const k = Math.exp(-0.5 * ((t - o.t) / h) ** 2);
+      sv += k * o.v; se += k * o.e;
+      // Support is measured at hRef, not h: because h widens until it finds data,
+      // se is self-normalizing and would read "confident" in the middle of a gap.
+      sup += Math.exp(-0.5 * ((t - o.t) / hRef) ** 2) * o.e;
+    }
+    out.curve.push({ x: t, y: (sv + SHRINK * base) / (se + SHRINK), sup });
+    if (sup > out.maxSup) out.maxSup = sup;
+  }
+  return out;
+}
+
+/* What a banked session contributes to leak history: EV+count per leak, and the
+   opportunity count per stage bucket that makes those numbers a rate. */
+const leakSnapshot = (s) => Object.fromEntries(Object.entries(s.leaks).map(([k, L]) => [k, { ev: +L.ev.toFixed(2), n: L.count }]));
+const oppSnapshot = (s) => Object.fromEntries(Object.entries(s.byStage).map(([k, b]) => [k, { n: b.n, good: b.good }]));
+
+/* Roll every tracked session into one row per leak, for the all-time list. */
+function leakTotals(recs) {
+  const acc = {};
+  for (const key of Object.keys(LEAKS)) {
+    const b = bucketOf(key);
+    if (!b) continue;
+    let v = 0, n = 0, e = 0;
+    for (const r of recs || []) {
+      if (!r || !r.opps) continue;
+      const ex = oppCount(r.opps[b]);
+      if (ex <= 0) continue;
+      e += ex;
+      const L = r.leaks && r.leaks[key];
+      if (L) { v += L.ev; n += L.n; }
+    }
+    if (n > 0) acc[key] = { ev: v, count: n, opps: e };
+  }
+  return acc;
+}
+
 /* ---------------- Cloud accounts (Supabase, optional) ----------------
    Magic-link login + cross-device session history. Uses plain fetch against
    Supabase Auth (GoTrue) and PostgREST — no dependencies. The publishable key
@@ -1456,6 +1592,64 @@ function LineChart({ series, height = 150, yLabel, fmtY }) {
   );
 }
 
+const dayMs = 86400000;
+function tLabel(t, span) {
+  const d = new Date(t);
+  if (span < 2 * dayMs) return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+/* Leak trend on a real time axis: raw sessions as dots sized by exposure, the
+   smoothed curve faded where its support is thin, all-time rate as a baseline.
+   Rate is shown in bb per 100 opportunities. */
+function LeakChart({ tr, height = 168 }) {
+  const W = 320, H = height, padL = 40, padR = 12, padT = 12, padB = 24;
+  if (!tr || !tr.obs.length) return null;
+  const rate = (o) => (o.v / o.e) * 100;
+  // Scale to where the practice actually is: a 5-spot session can post a wild
+  // rate and would otherwise flatten the real curve into the bottom of the chart.
+  // The axis covers 90% of total exposure; rarer/higher dots clamp to the top.
+  const byRate = tr.obs.map((o) => ({ r: rate(o), e: o.e })).sort((a, b) => a.r - b.r);
+  let acc = 0, q = byRate.length ? byRate[byRate.length - 1].r : 1;
+  for (const s of byRate) { acc += s.e; if (acc >= 0.9 * tr.totE) { q = s.r; break; } }
+  let lo = 0, hi = Math.max(q, tr.base * 100, ...tr.curve.map((p) => p.y * 100));
+  if (!(hi > 0)) hi = 1;
+  hi *= 1.15;
+  const t0 = tr.obs[0].t, span = tr.span;
+  const xOf = (t) => (span <= 0 ? padL + (W - padL - padR) / 2 : padL + ((t - t0) / span) * (W - padL - padR));
+  const yOf = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const maxE = Math.max(...tr.obs.map((o) => o.e));
+  const ticks = [lo, hi / 2, hi];
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
+      {ticks.map((t, i) => (
+        <g key={i}>
+          <line x1={padL} x2={W - padR} y1={yOf(t)} y2={yOf(t)} stroke={T.line} strokeWidth="1" />
+          <text x={padL - 5} y={yOf(t) + 3} textAnchor="end" fontFamily={MONO} fontSize="8" fill={T.dim}>{t.toFixed(1)}</text>
+        </g>
+      ))}
+      <line x1={padL} x2={W - padR} y1={yOf(tr.base * 100)} y2={yOf(tr.base * 100)} stroke={T.dim} strokeWidth="1" strokeDasharray="3 3" opacity="0.55" />
+      {tr.curve.slice(1).map((p, i) => {
+        const q = tr.curve[i];
+        // Per-segment opacity so stretches with little nearby practice read as uncertain.
+        const sup = Math.min(q.sup, p.sup);
+        return <line key={i} x1={xOf(q.x)} y1={yOf(q.y * 100)} x2={xOf(p.x)} y2={yOf(p.y * 100)}
+          stroke={T.heart} strokeWidth="2" strokeLinecap="round" opacity={0.18 + 0.82 * Math.min(1, sup / KERNEL_SUPPORT)} />;
+      })}
+      {tr.obs.map((o, i) => {
+        const r = 2 + 3 * Math.sqrt(o.e / maxE), x = xOf(o.t), v = rate(o);
+        // Off-scale sessions become a caret on the top edge rather than silently
+        // vanishing or dragging the axis out to meet them.
+        if (v > hi) return <path key={i} d={`M${x - r},${padT + r} L${x},${padT} L${x + r},${padT + r}`}
+          fill="none" stroke={o.live ? T.brass : T.bone} strokeWidth="1.5" opacity={o.live ? 1 : 0.45} />;
+        return <circle key={i} cx={x} cy={yOf(v)} r={r}
+          fill={o.live ? "none" : T.bone} stroke={o.live ? T.brass : "none"} strokeWidth="1.5" opacity={o.live ? 1 : 0.5} />;
+      })}
+      <text x={padL} y={H - 6} fontFamily={MONO} fontSize="8" fill={T.dim}>{tLabel(t0, span)}</text>
+      <text x={W - padR} y={H - 6} textAnchor="end" fontFamily={MONO} fontSize="8" fill={T.dim}>{span > 0 ? tLabel(t0 + span, span) : ""}</text>
+    </svg>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState("setup");
   const [cfg, setCfg] = useState({ mode: "9max", hu: "tag", seats: ["nit", "tag", "lag", "station", "maniac", "tag", "station", "nit"], stake: 0, stack: 2, image: "unknown", play: "drill" });
@@ -1470,6 +1664,8 @@ export default function App() {
   const [history, setHistory] = useState(() => loadHist(store.get("ll_current", null)));
   const [nameInput, setNameInput] = useState("");
   const [peek, setPeek] = useState(null);
+  const [openLeak, setOpenLeak] = useState(null);
+  const [leakScope, setLeakScope] = useState("session");
   const [cloud, setCloud] = useState(null); // { at, rt, email }
   const [cloudHist, setCloudHist] = useState(null); // cloud session records when signed in
   const [emailInput, setEmailInput] = useState("");
@@ -1508,7 +1704,8 @@ export default function App() {
   const bankSession = () => {
     if (sess.n < 5) return false;
     const acc = Math.round((sess.good / sess.n) * 100);
-    const rec = { t: Date.now(), n: sess.n, acc, ev: +sess.ev.toFixed(1), evPer: +(sess.ev / sess.n).toFixed(3), realized: +sess.realized.toFixed(1), hands: sess.hands, mode: cfg.play, stake: STAKES[cfg.stake].label };
+    const rec = { t: Date.now(), n: sess.n, acc, ev: +sess.ev.toFixed(1), evPer: +(sess.ev / sess.n).toFixed(3), realized: +sess.realized.toFixed(1), hands: sess.hands, mode: cfg.play, stake: STAKES[cfg.stake].label,
+      leaks: leakSnapshot(sess), opps: oppSnapshot(sess) };
     if (profile) { const h = saveSessionRecord(profile, rec); setHistory(h); }
     if (CLOUD_ON && cloud) {
       sbInsertSession(cloud.at, rec, profile)
@@ -1593,8 +1790,31 @@ export default function App() {
   };
 
   const acc = sess.n ? Math.round((100 * sess.good) / sess.n) : 0;
-  const leakList = Object.entries(sess.leaks).sort((a, b) => b[1].ev - a[1].ev);
+
+  // Leak history: cloud records only carry leak data once the backend stores it,
+  // so fall back to whichever source actually has tracked sessions. The live
+  // session rides along as a provisional point so the trend responds immediately.
+  const leakRecs = useMemo(() => {
+    const tracked = (a) => (a || []).filter((r) => r && r.opps);
+    const loc = tracked(history), cld = tracked(cloudHist);
+    const banked = cld.length > loc.length ? cld : loc;
+    if (sess.n < 5) return banked;
+    return banked.concat([{ t: Date.now(), live: true, leaks: leakSnapshot(sess), opps: oppSnapshot(sess) }]);
+  }, [history, cloudHist, sess]);
+  const allTime = useMemo(() => leakTotals(leakRecs), [leakRecs]);
+  const allTimeTot = useMemo(() => {
+    let ev = 0, n = 0, s = 0; const opps = {};
+    for (const r of leakRecs) {
+      s++;
+      if (r.live) { ev += sess.ev; n += sess.n; } else { ev += r.ev || 0; n += r.n || 0; }
+      for (const [b, e] of Object.entries(r.opps || {})) opps[b] = (opps[b] || 0) + oppCount(e);
+    }
+    return { ev, n, s, opps };
+  }, [leakRecs, sess]);
+  const scope = leakScope === "all" ? allTime : sess.leaks;
+  const leakList = Object.entries(scope).sort((a, b) => b[1].ev - a[1].ev);
   const maxEv = leakList.length ? leakList[0][1].ev : 1;
+  const openTrend = useMemo(() => (openLeak ? leakTrend(leakRecs, openLeak) : null), [openLeak, leakRecs]);
   const isPost = sc ? POST_STAGES.includes(sc.stage) : false;
   const scPct = sc ? (isPost ? sc.cls.rank : sc.hand.pct) : 0;
   const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
@@ -1620,7 +1840,7 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontFamily: DISP, fontWeight: 700, fontSize: 26, letterSpacing: 3, color: T.bone }}>LEAK LAB</div>
-            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10, letterSpacing: 2.5, color: T.dim }}>GTO TRAINER · PRE + POSTFLOP</div>
+            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10, letterSpacing: 2.5, color: T.dim }}>LIVE STRATEGY · REAL PLAYERS, REAL SPOTS</div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
             <div style={{ fontFamily: MONO, fontSize: 10, color: T.dim }}>{STAKES[cfg.stake].label} · {stackBB}bb · {cfg.mode === "hu" ? "HU" : cfg.mode === "9max" ? "9-MAX" : "6-MAX"}</div>
@@ -1684,7 +1904,7 @@ export default function App() {
                   <span style={{ fontFamily: DISP, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, padding: "5px 12px", borderRadius: 999,
                     color: "#10130F",
                     background: fb.g.verdict === "best" ? T.club : fb.g.verdict === "ok" ? T.diamond : T.heart }}>
-                    {fb.g.verdict === "best" ? "✓ GTO PLAY" : fb.g.verdict === "ok" ? "≈ MIXED — FINE" : `LEAK −${fb.g.ev}bb · −${usd(fb.g.ev * bbv)}`}
+                    {fb.g.verdict === "best" ? "✓ SOLID PLAY" : fb.g.verdict === "ok" ? "≈ MIXED — FINE" : `LEAK −${fb.g.ev}bb · −${usd(fb.g.ev * bbv)}`}
                   </span>
                   <span style={{ fontFamily: MONO, fontSize: 11, color: T.dim }}>chart: {actionLabel(sc.stage, fb.g.best, sc.hu, sc, bbv)}</span>
                 </div>
@@ -1751,40 +1971,116 @@ export default function App() {
         {view === "leaks" && (
           <div>
             <div style={{ display: "flex", gap: 10, padding: "10px 0 14px", borderBottom: `1px solid ${T.line}` }}>
-              <Stat k="DECISIONS" v={sess.n} />
-              <Stat k="ACCURACY" v={`${acc}%`} color={acc >= 80 ? T.club : T.brass} />
-              <Stat k={`EV LOST · ${sess.ev.toFixed(1)}bb`} v={usd(sess.ev * bbv)} color={T.heart} />
+              {leakScope === "all" ? (
+                <>
+                  <Stat k="SESSIONS" v={allTimeTot.s} />
+                  <Stat k="DECISIONS" v={allTimeTot.n} />
+                  <Stat k={`EV LOST · ${allTimeTot.ev.toFixed(1)}bb`} v={usd(allTimeTot.ev * bbv)} color={T.heart} />
+                </>
+              ) : (
+                <>
+                  <Stat k="DECISIONS" v={sess.n} />
+                  <Stat k="ACCURACY" v={`${acc}%`} color={acc >= 80 ? T.club : T.brass} />
+                  <Stat k={`EV LOST · ${sess.ev.toFixed(1)}bb`} v={usd(sess.ev * bbv)} color={T.heart} />
+                </>
+              )}
             </div>
             <div style={{ display: "flex", gap: 8, margin: "12px 0 18px", flexWrap: "wrap" }}>
-              {Object.entries(sess.byStage).map(([k, b]) => (
-                <span key={k} style={{ fontFamily: MONO, fontSize: 11, color: T.dim, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 999, padding: "5px 10px" }}>
-                  {STAGE_LABEL[k]} {Math.round((100 * b.good) / b.n)}%
-                </span>
-              ))}
+              {leakScope === "all"
+                ? Object.entries(allTimeTot.opps).map(([k, e]) => (
+                  <span key={k} style={{ fontFamily: MONO, fontSize: 11, color: T.dim, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 999, padding: "5px 10px" }}>
+                    {STAGE_LABEL[k]} {e} spots
+                  </span>
+                ))
+                : Object.entries(sess.byStage).map(([k, b]) => (
+                  <span key={k} style={{ fontFamily: MONO, fontSize: 11, color: T.dim, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 999, padding: "5px 10px" }}>
+                    {STAGE_LABEL[k]} {Math.round((100 * b.good) / b.n)}%
+                  </span>
+                ))}
+            </div>
+            <div style={{ display: "flex", gap: 4, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, padding: 4, marginBottom: 14 }}>
+              {seg("This session", leakScope === "session", () => setLeakScope("session"), "ls")}
+              {seg("All time", leakScope === "all", () => setLeakScope("all"), "la")}
             </div>
             {leakList.length === 0 && (
               <div style={{ textAlign: "center", padding: "40px 20px", color: T.dim }}>
-                <div style={{ fontSize: 15, marginBottom: 16 }}>No leaks logged yet. Every miss lands here, priced in big blinds.</div>
+                <div style={{ fontSize: 15, marginBottom: 16 }}>
+                  {leakScope === "all"
+                    ? "No banked sessions yet. Bank a session and your leaks start building a trend here."
+                    : "No leaks logged yet. Every miss lands here, priced in big blinds."}
+                </div>
                 <Btn full kind="raise" label="Start drilling" onClick={() => start()} />
               </div>
             )}
-            {leakList.map(([k, L]) => (
-              <div key={k} style={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 14, color: T.bone }}>{LEAKS[k].label}</div>
-                    <div style={{ fontFamily: MONO, fontSize: 11, color: T.dim, marginTop: 3 }}>{L.count}× · −{L.ev.toFixed(1)}bb · −{usd(L.ev * bbv)}</div>
+            {leakList.map(([k, L]) => {
+              const open = openLeak === k;
+              const tr = open ? openTrend : null;
+              const per100 = L.opps ? (100 * L.ev) / L.opps : null;
+              return (
+                <div key={k} style={{ background: T.panel, border: `1px solid ${open ? T.brass : T.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                    <div className="ll-tap" onClick={() => setOpenLeak(open ? null : k)} style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 14, color: T.bone }}>{LEAKS[k].label}</div>
+                      <div style={{ fontFamily: MONO, fontSize: 11, color: T.dim, marginTop: 3 }}>
+                        {L.count}× · −{L.ev.toFixed(1)}bb · −{usd(L.ev * bbv)}
+                        {per100 != null && ` · ${per100.toFixed(2)}bb/100`}
+                        <span style={{ color: T.brass, marginLeft: 6 }}>{open ? "▾" : "▸"}</span>
+                      </div>
+                    </div>
+                    <button className="ll-btn" onClick={() => start(LEAKS[k].drill)} style={{ background: "transparent", border: `1.5px solid ${T.brass}`,
+                      color: T.brass, borderRadius: 10, padding: "8px 14px", fontFamily: DISP, fontWeight: 700, fontSize: 13, letterSpacing: 1 }}>
+                      DRILL
+                    </button>
                   </div>
-                  <button className="ll-btn" onClick={() => start(LEAKS[k].drill)} style={{ background: "transparent", border: `1.5px solid ${T.brass}`,
-                    color: T.brass, borderRadius: 10, padding: "8px 14px", fontFamily: DISP, fontWeight: 700, fontSize: 13, letterSpacing: 1 }}>
-                    DRILL
-                  </button>
+                  <div style={{ height: 5, borderRadius: 3, background: "#202723", marginTop: 10 }}>
+                    <div style={{ height: 5, borderRadius: 3, width: `${(100 * L.ev) / maxEv}%`, background: T.heart }} />
+                  </div>
+                  {open && (
+                    <div style={{ borderTop: `1px solid ${T.line}`, marginTop: 12, paddingTop: 12 }}>
+                      {!tr || tr.obs.length < 2 ? (
+                        <div style={{ fontFamily: MONO, fontSize: 11, color: T.dim, lineHeight: 1.6 }}>
+                          {!tr || !tr.obs.length
+                            ? `No tracked sessions with ${STAGE_LABEL[bucketOf(k)]} spots yet.`
+                            : `Only one session so far has faced ${STAGE_LABEL[bucketOf(k)]} spots.`}
+                          {" "}Bank a few sessions{profile || (CLOUD_ON && cloud) ? "" : " (pick a player in Progress first)"} and the trend line appears here.
+                        </div>
+                      ) : (() => {
+                        const d = tr.late - tr.early, rel = tr.early > 0 ? d / tr.early : 0;
+                        const better = d < 0;
+                        const flat = Math.abs(rel) < 0.1;
+                        const thin = tr.maxSup < KERNEL_SUPPORT;
+                        return (
+                          <>
+                            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 11, letterSpacing: 2, color: T.dim, marginBottom: 4 }}>
+                              BB LOST PER 100 {STAGE_LABEL[bucketOf(k)]} SPOTS · lower is better
+                            </div>
+                            <LeakChart tr={tr} />
+                            <div style={{ display: "flex", gap: 10, padding: "10px 0 2px" }}>
+                              <Stat k="SESSIONS" v={tr.obs.length} />
+                              <Stat k="SPOTS FACED" v={tr.totE} />
+                              <Stat k="ALL-TIME" v={`${(tr.base * 100).toFixed(2)}`} color={T.brass} />
+                            </div>
+                            <div style={{ fontFamily: MONO, fontSize: 11.5, color: flat ? T.dim : better ? T.club : T.heart, marginTop: 8, lineHeight: 1.6 }}>
+                              {flat ? "→" : better ? "▼" : "▲"} {(tr.early * 100).toFixed(2)} → {(tr.late * 100).toFixed(2)} bb/100
+                              {" — "}
+                              {flat ? "holding steady; this one isn't moving yet."
+                                : better ? `down ${Math.abs(Math.round(rel * 100))}% — first ${tr.halfE} spots vs last ${tr.halfE}.`
+                                : `up ${Math.abs(Math.round(rel * 100))}% — first ${tr.halfE} spots vs last ${tr.halfE}. Worth drilling.`}
+                            </div>
+                            <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.dim, marginTop: 8, lineHeight: 1.6 }}>
+                              Dots are sessions, sized by how many {STAGE_LABEL[bucketOf(k)]} spots they held; the hollow one is this session, unbanked.
+                              A caret on the top edge is a session too short to scale to. The line weights each session by its length and by how
+                              close in time it sits, so a short session can't swing it.
+                              {thin && " Faint stretches are thin on data — treat them as a hint, not a verdict."}
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
-                <div style={{ height: 5, borderRadius: 3, background: "#202723", marginTop: 10 }}>
-                  <div style={{ height: 5, borderRadius: 3, width: `${(100 * L.ev) / maxEv}%`, background: T.heart }} />
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {sess.n > 0 && (
               <div className="ll-tap" onClick={resetSession} style={{ textAlign: "center", fontFamily: MONO, fontSize: 11, color: T.dim, marginTop: 16, textDecoration: "underline" }}>
                 reset session
@@ -2004,7 +2300,7 @@ export default function App() {
               </div>
             )}
 
-            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>PLAYER TYPES · tap one for its assumed ranges</div>
+            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>PLAYER TYPES · tap to learn the tells + assumed ranges</div>
             {PROFILES.map((p) => (
               <div key={`pt-${p.id}`} style={{ background: T.panel, border: `1px solid ${openProf === p.id ? T.brass : T.line}`, borderRadius: 12, marginBottom: 8, overflow: "hidden" }}>
                 <div className="ll-tap" onClick={() => setOpenProf(openProf === p.id ? null : p.id)}
@@ -2018,6 +2314,9 @@ export default function App() {
                 </div>
                 {openProf === p.id && (
                   <div style={{ padding: "2px 14px 12px", borderTop: `1px solid ${T.line}` }}>
+                    <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10.5, letterSpacing: 2, color: T.brass, marginTop: 10 }}>SPOT THEM LIVE</div>
+                    <div style={{ fontFamily: MONO, fontSize: 11, color: T.bone, lineHeight: 1.55, marginTop: 4 }}>{p.spot}</div>
+                    <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10.5, letterSpacing: 2, color: T.dim, marginTop: 10 }}>ASSUMED RANGES</div>
                     {profDetail(p, cfg.mode).map((l, i) => (
                       <div key={i} style={{ fontFamily: MONO, fontSize: 11, color: T.bone, lineHeight: 1.55, marginTop: 8 }}>{l}</div>
                     ))}

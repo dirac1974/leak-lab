@@ -1,7 +1,7 @@
-# 🃏 Leak Lab — Poker GTO Trainer
+# 🃏 Leak Lab — Live Poker Strategy Trainer
 
-**A mobile-first No-Limit Hold'em trainer for finding the leaks in your game.**
-Seat a table full of opponent archetypes, drill pre- and postflop decisions against a GTO baseline, and see every mistake priced in the big blinds and dollars of *your* stakes.
+**You aren't playing against a GTO bot. Neither is anyone at your table.**
+Leak Lab is a mobile-first No-Limit Hold'em trainer for *real* games: learn to spot which player type you're facing — the Nit, the Station, the LAG, the Maniac — learn what they're actually doing, and drill the adjustments that beat them. Every decision is graded against a solid baseline, every deviation explained, and every mistake priced in the big blinds and dollars of *your* stakes.
 
 ### ▶️ Live app
 
@@ -18,7 +18,7 @@ Open it on your phone — it's a single self-contained page, installs nothing, a
 Leak Lab runs a fast decision loop: **deal → decide → grade → learn.**
 
 - **Two ways to play.** *Drill spots* for fast reps of one decision type, or *Full hands* — play a hand start to finish with a **dealer button that rotates** each hand, so you cycle through every seat (UTG → CO → button → blinds) exactly like a live game. Arrange your lineup so the tricky players sit where they really do, and find your weakest positions faster.
-- **Profile the table.** Nine-max, six-max, or heads-up. Seat each opponent as one of six archetypes — GTO Bot, Nit, TAG, LAG, Station, or Maniac — each with its own opening, 3-bet, and postflop tendencies. Tap any player type to read a plain-language description *and* the exact ranges assumed for it.
+- **Profile the table.** Nine-max, six-max, or heads-up. Seat each opponent as one of six archetypes — GTO Bot, Nit, TAG, LAG, Station, or Maniac — each with its own opening, 3-bet, and postflop tendencies. Tap any player type for **how to spot one live** (the tells that identify them), a plain-language read, *and* the exact ranges assumed for it.
 - **Set your own table image.** Tell the app how the table reads you — Unknown, Rock, Solid, LAG, Splashy, or Wild — or let it derive your image from your actual session tendencies. All the advice then tailors to *your* style.
 - **Drill any spot.** Opens, defending vs opens, 3-bet pots, c-bets, defending vs c-bets, and river decisions. Focus filters jump you straight to the spot you want to sharpen.
 - **Three layers of coaching on every decision.** A **GTO baseline** (the unexploitable play and why), an **Exploit** note (how to deviate against this specific player type, and why it beats GTO here), and a **Their Read** note (what the opponent is likely thinking — factoring in how they perceive *you*).

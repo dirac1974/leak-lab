@@ -8,7 +8,7 @@ This document is the map of how Leak Lab works: the agent/data-model design, the
 
 1. **Zero backend, zero solver load on the device.** Everything is a precomputed lookup or a cheap heuristic. A phone can run it with no server round-trips. This is the core constraint that shapes every other decision.
 2. **Find leaks fast.** The unit of value is *EV lost*, ranked and priced in the user's actual stakes. The whole loop exists to surface and drill leaks.
-3. **Opponent-aware.** Real leaks are relative to who you're playing. The profile system is what lets the coaching say "deviate *because of this player*," which is the app's reason to exist.
+3. **Opponent-aware.** Real leaks are relative to who you're playing. The profile system is what lets the coaching say "deviate *because of this player*," which is the app's reason to exist. This is also the product voice: **practical live strategy, not solver purity** — you aren't playing a GTO bot, so the trainer teaches what the real player is doing and how to identify which type they are. GTO remains the internal grading baseline, referenced in coach notes as the anchor, never as the identity.
 4. **Live-game realism.** Chip-rounded bets, real stack depths, effective-stack tracking, multiple bet sizes — so the practice transfers to a real table.
 
 ---
@@ -31,6 +31,7 @@ Each profile is a plain object of behavioral parameters:
 ```js
 {
   id, name, icon, desc,
+  spot,                      // how to recognize this archetype at a live table (shown in the detail view)
   rfi,                       // open-raise width as a multiplier on the GTO baseline (1.0 = GTO)
   cbet,                      // flop c-bet frequency (0–1)
   vsRaise: { f, c, r },      // response to hero's open:    fold / call / 3-bet
@@ -178,3 +179,55 @@ There is no framework. `src/entry.jsx` mounts `App` from `src/leak-lab.jsx`. The
 - `adviceFor()` — GTO baseline.
 - `exploitFor()` — deviation vs the specific villain in the spot (6 profiles × 5 roles).
 - `mindsetFor()` + `imageEdge()` — what the opponent is thinking, keyed on whether they're a *thinking* type (TAG/LAG/GTO adjust to your image; Nit/Station/Maniac don't), their role, and the hero's table **image**. `IMAGES` holds the six self-images; `sessionImage()` derives a suggested image from tracked aggression/passivity/fold tendencies.
+
+---
+
+## 10. Leak tracking over time (v1.2)
+
+Per-leak trends, shown when a row in the Leaks view is tapped. Three pieces: what gets stored, how the trend is estimated, and how the chart avoids lying.
+
+### 10a. What a banked session stores
+
+`bankSession()` adds two maps to each history record:
+
+```js
+leaks: { rv_spew: { ev: 12.4, n: 6 }, ... }          // bb lost + miss count, per leak
+opps:  { rivers: { n: 84, good: 71 }, ... }          // decisions faced + correct, per stage bucket
+```
+
+(The earliest tracked records stored `opps` values as bare numbers; every reader goes through `oppCount()`, which accepts both shapes. The `good` counts make stage-accuracy-over-time reconstructible from banked history.)
+
+`opps` is what turns EV into a *rate*. `LEAKS[k].drill` names the stage a leak lives in; `bucketOf()` maps it to the `byStage` key (only `vs3bet → pressure` is not identity).
+
+### 10b. The metric: EV lost per opportunity
+
+A leak's severity is **bb lost per decision in its own stage bucket**, displayed as bb/100. Not per session, not per total decision. A session that never reached a river says nothing about river leaks and is dropped from that leak's series entirely — it is *not* a clean zero. A session that faced rivers and leaked nothing **is** a real zero and counts. Without this split, a session's spot mix reads as improvement.
+
+### 10c. The trend: exposure-weighted kernel regression over calendar time
+
+Sessions are irregular in length *and* spacing, so neither session index nor a plain per-session average is fair. `leakTrend()` estimates
+
+```
+f(t) = Σ K((t−tᵢ)/h)·vᵢ  /  Σ K((t−tᵢ)/h)·eᵢ
+```
+
+with `vᵢ` = bb lost, `eᵢ` = opportunities, `K` = Gaussian. Dividing weighted EV by weighted *exposure* — rather than averaging per-session rates — makes each point a pooled rate, which is the correct way to combine rates of unequal sample size. A 12-spot session cannot outvote a 300-spot one.
+
+- **Adaptive bandwidth.** `h` widens per point until `KERNEL_SUPPORT` (60) opportunities are in reach. Dense stretches keep resolution; sparse ones borrow from further out instead of drawing noise.
+- **Shrinkage.** Each point is pulled toward the player's all-time rate by `SHRINK` (25) pseudo-opportunities, so one short bad session can't spike the curve.
+- **Support is measured separately.** Because `h` grows until it finds data, the kernel-weighted exposure is self-normalizing and would read "confident" in the middle of a six-month gap. `sup` is therefore computed at a *fixed* reference bandwidth (`span/12`) and is what drives the chart's per-segment fade.
+
+### 10d. The headline delta uses halves, not curve endpoints
+
+`halves()` splits the sessions into two sides holding equal *exposure* (splitting a session across the boundary proportionally) and pools each. Reading the smoothed curve's first and last points instead would inherit kernel boundary bias: with one-sided support, a short session sitting on either end swings the number hard — on a synthetically flat series the endpoints read a 30%+ change while the halves read flat. The UI states the basis outright: "first 337 spots vs last 337."
+
+### 10e. Chart honesty
+
+`LeakChart` plots on a real time axis, so gaps between sessions are visible as gaps.
+- Dots are sessions, radius scaled by exposure; the hollow brass one is the current unbanked session (included provisionally once it has 5+ decisions).
+- The y-axis covers 90% of total exposure, not the max. A 5-spot session can post a wild rate and would otherwise flatten the real curve into the bottom of the chart; those clamp to a caret on the top edge rather than dragging the axis.
+- Segment opacity tracks `sup`, so stretches with little nearby practice read as uncertain.
+
+### 10f. Scope and storage notes
+
+The Leaks view toggles between the live session and an all-time roll-up (`leakTotals()`). Records banked before v1.2 have no `opps` and are skipped by `leakObs()`, so old history degrades to "not tracked" rather than to wrong numbers. Cloud sync (`sbInsertSession`) does not yet carry `leaks`/`opps` — leak history is local until the `ll_sessions` table gains those columns, and `leakRecs` falls back to whichever source actually has tracked sessions.
