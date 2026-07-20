@@ -242,3 +242,14 @@ Low-stakes live poker is limped, over-called, multiway poker; heads-up-only scen
 - **Multiway flops** (`sc.field`): after hero opens/isos, `continuation()` walks the whole field collecting callers (a raise anywhere short-circuits to the 3-bet line). Postflop zones take `ctx.mw`: value thresholds tighten ~7 points per extra opponent, bluff bands collapse (×0.45 two-way, ×0.2 three-plus), river bluffs mostly vanish. Showdowns use `winPMw` (independent-draw power approximation). `mw = 1` reduces to exactly the old behavior.
 - **Squeeze spots** (`sc.coldCallers`): cold-callers appear between the open and hero; calling widens (price + implied odds), 3-bets become value-lean squeezes sized `3-bet + one open per caller` (`squeezeBB`). Continuation covers the fold-out (dead-money win), the opener continuing (callers release, dead money stays), and a sticky caller peeling.
 - **Defender-side multiway** (`sc.defMw`): facing a bet in a family pot tightens continues (×0.88 per extra player) and makes raises value-only; once hero calls, remaining players step aside and later streets run heads-up (documented simplification).
+
+---
+
+## 12. Asymmetric stacks (v1.4)
+
+Live tables are stack mosaics, and stack depth changes correct play as much as position does. Hero's options now run 40–500bb, and every villain draws a profile-flavored stack (`vilStk`): rocks sit near the buy-in, stations bleed or top up, maniacs are busto or on a mountain, and sometimes somebody simply has you covered.
+
+- **Effective stacks are real** (`effVs`): every confrontation — defends, 3-bet pots, postflop chains, jams — uses `min(hero, villain) − committed`, so SPR (and every zone shift that hangs off it) reflects the player you're actually against. In multiway fields the *deepest* live opponent governs depth: the short stack is priced in; the big stack is who your big bets are playing.
+- **Priced-in behavior** (`respondToBetStk`): a bet over ~55% of a villain's remaining stack collapses their fold frequency ("nobody folds for $75 more"); a bet that covers them becomes a call all-in for less. All-in-for-less callers ride an `aiN` counter into every later showdown count — they can't fold, and the board runs out when no live stacks remain.
+- **Strategy shifts**: calling vs a short opener tightens ×0.75 (implied odds die); vs a 250bb+ effective it widens ×1.12 (speculative hands get paid). Very deep SPR tightens thin value harder (dp cap 4→6), and the coach warns that one pair stops being a stack-off past SPR ~13.
+- **UI**: stacks show on every villain chip and table seat, tinted short (red) / deep (green), and shrink street by street as chips go in.

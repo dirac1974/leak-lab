@@ -152,8 +152,12 @@ function zonesFor(stage, ctx) {
     // Callers in between: 3-bets become squeezes — value-lean (worse fold equity,
     // someone always calls live) — while calling gets better (price + multiway
     // implied odds, especially the hands that flop big).
+    // Stack depth vs the opener reshapes calling: short kills implied odds
+    // (speculative flats can't get paid), very deep feeds them.
+    const eo = ctx.effOpp;
+    const depthF = eo != null && eo < 40 ? 0.75 : eo != null && eo >= 250 ? 1.12 : 1;
     const rT = d.r * tf * (nC ? 0.8 : 1);
-    const cT = Math.min(85, d.c * tf * (1 + 0.22 * nC));
+    const cT = Math.min(85, d.c * tf * (1 + 0.22 * nC) * depthF);
     return [
       { a: "raiseS", lbl: nC ? "SQUEEZE" : "3-BET", from: 0, to: rT },
       { a: "call", from: rT, to: cT },
@@ -169,7 +173,7 @@ function zonesFor(stage, ctx) {
        mostly vanish, and bluff-catching thins — the live family-pot adjustment. */
     const spr = ctx.spr == null ? 6 : ctx.spr;
     const sh = Math.max(-4, Math.min(8, (2.5 - spr) * 2.2));
-    const dp = spr > 6 ? Math.min(4, (spr - 6) * 0.8) : 0;
+    const dp = spr > 6 ? Math.min(6, (spr - 6) * 0.8) : 0;
     const mw = Math.max(1, ctx.mw || 1);
     const mwV = (mw - 1) * 7;                       // value threshold tightens per extra opponent
     const mwBl = mw === 1 ? 1 : mw === 2 ? 0.45 : 0.2; // bluff band survival factor
@@ -285,7 +289,7 @@ const STAKES = [
   { label: "$1/$3", bb: 3, sb: 1, inc: 1 },
   { label: "$2/$5", bb: 5, sb: 2, inc: 5 },
 ];
-const STACK_OPTS = [40, 60, 100, 150, 200]; // starting stacks in bb — 200bb max
+const STACK_OPTS = [40, 60, 100, 150, 200, 300, 500]; // starting stacks in bb — deep live games run 300bb+
 const SB_OF = { 2: 0.5, 3: 1 / 3, 5: 0.4 }; // small blind in bb, per $/bb
 const INC_OF = { 2: 1, 3: 1, 5: 5 }; // live chip increment in $
 const usd = (x) => { const r = Math.round(x * 100) / 100; return "$" + (Number.isInteger(r) ? r : r.toFixed(2)); };
@@ -614,6 +618,38 @@ const isoOpenBB = (id, bbv, hu, limpers) => openBBForId(id, bbv, hu) + (limpers 
 const squeezeBB = (openBB, sz, callers) => threeBetBB(openBB, sz) + (callers || 0) * openBB; // 3-bet + one open per caller
 /* Hero's showdown equity vs N live opponents: independent-draw approximation. */
 const winPMw = (p1, mw) => Math.pow(Math.min(0.97, Math.max(0.03, p1)), Math.max(1, mw || 1));
+/* Live stacks are a mosaic, not a row of matched buy-ins. Profile-flavored draw:
+   rocks sit near the buy-in, stations bleed or top up, maniacs are busto or
+   sitting on a mountain — and sometimes somebody simply has you covered deep. */
+function vilStk(p, S, bbv) {
+  const r = Math.random(), r2 = Math.random();
+  let bb;
+  if (p.id === "nit") bb = 80 + r * 70;
+  else if (p.id === "station") bb = 35 + r * 115;
+  else if (p.id === "maniac") bb = r < 0.45 ? 22 + r2 * 70 : 130 + r2 * 320;
+  else if (p.id === "lag") bb = 60 + r * 300;
+  else bb = 70 + r * 200;
+  if (Math.random() < 0.15) bb = Math.max(bb, S * (1.05 + r2 * 0.9)); // someone has you covered
+  return chipBB(Math.max(15, Math.min(600, bb)), bbv);
+}
+/* Effective stack for a confrontation: you can only win what the shorter stack has. */
+const effVs = (S, stk, committed) => Math.max(1, Math.min(S, stk == null ? S : stk) - (committed || 0));
+/* Stack-aware response to a bet: a short stack facing most of their chips is
+   priced in — they call all-in for less or they're already gone; nobody folds
+   for $75 more. Returns the response plus the capped call amount if all-in. */
+function respondToBetStk(v, frac, betBB) {
+  let r = respondToBet(v.p, frac);
+  const stk = v.stk;
+  if (stk == null) return { r, cap: null };
+  if (betBB >= stk) {
+    if (r === "r") r = "c";
+    if (r === "f" && Math.random() < 0.5) r = "c"; // the price makes folding rare
+    return { r, cap: r === "c" ? stk : null };
+  }
+  if (betBB >= stk * 0.55 && r === "f" && Math.random() < 0.6) r = "c"; // priced in — sticky
+  if (betBB >= stk * 0.8 && r === "r") r = "c";
+  return { r, cap: null };
+}
 
 /* ---------------- Scenario generation ---------------- */
 function genScenario(cfg, filter, tries = 0) {
@@ -627,10 +663,11 @@ function genScenario(cfg, filter, tries = 0) {
   const D = (x) => usd(x * bbv);
   if (hu) {
     const v = PROF[cfg.hu];
-    const rfiSc = () => ({ hu, S, bbv, effBB: (S - 1), heroPos: "SB", hand: dealBiased(foldBoundary("rfi", { hu, mode: cfg.mode, rfiT: HU_OPEN, heroPos: "SB", bbv })), stage: "rfi", potBB: (1 + sb), villains: [{ pos: "BB", p: v }] });
-    const vsOpenSc = () => ({ hu, S, bbv, openBB, effBB: (S - openC), heroPos: "BB", hand: dealBiased(foldBoundary("vsOpen", { openerPos: "SB", heroPos: "BB", hu, mode: cfg.mode, openBB, bbv })), stage: "vsOpen", openerPos: "SB", openerP: v, potBB: (openC + 1), villains: [{ pos: "SB", p: v, act: `opens ${D(openC)}` }] });
+    const vs = () => vilStk(v, S, bbv);
+    const rfiSc = () => { const stk = vs(); return { hu, S, bbv, effBB: effVs(S, stk, 1), heroPos: "SB", hand: dealBiased(foldBoundary("rfi", { hu, mode: cfg.mode, rfiT: HU_OPEN, heroPos: "SB", bbv })), stage: "rfi", potBB: (1 + sb), villains: [{ pos: "BB", p: v, stk }] }; };
+    const vsOpenSc = () => { const stk = vs(); return { hu, S, bbv, openBB, effBB: effVs(S, stk, openC), effPre: Math.min(S, stk), heroPos: "BB", hand: dealBiased(foldBoundary("vsOpen", { openerPos: "SB", heroPos: "BB", hu, mode: cfg.mode, openBB, bbv })), stage: "vsOpen", openerPos: "SB", openerP: v, openerStk: stk, potBB: (openC + 1), villains: [{ pos: "SB", p: v, stk, act: `opens ${D(openC)}` }] }; };
     if (filter === "vsOpen") return vsOpenSc();
-    if (filter === "vs3bet") return { hu, S, bbv, openBB, effBB: (S - tbC), heroPos: "SB", hand: sampleFromTop(HU_OPEN), stage: "vs3bet", aggP: v, aggPos: "BB", potBB: (openC + tbC), pre: `You open ${D(openC)}`, villains: [{ pos: "BB", p: v, act: `3-bets ${D(tbC)}` }] };
+    if (filter === "vs3bet") { const stk = vs(); return { hu, S, bbv, openBB, effBB: effVs(S, stk, tbC), aggStk: stk, heroPos: "SB", hand: sampleFromTop(HU_OPEN), stage: "vs3bet", aggP: v, aggPos: "BB", potBB: (openC + tbC), pre: `You open ${D(openC)}`, villains: [{ pos: "BB", p: v, stk, act: `3-bets ${D(tbC)}` }] }; }
     if (filter === "rfi") return rfiSc();
     if (Math.random() < 0.5) return rfiSc();
     if (opensHere(v, HU_OPEN)) return vsOpenSc();
@@ -645,7 +682,7 @@ function genScenario(cfg, filter, tries = 0) {
   else heroIdx = (Math.random() * nSeats) | 0;
   const heroPos = POSN[heroIdx];
   const others = POSN.filter((p) => p !== heroPos);
-  const villains = others.map((pos, i) => ({ pos, p: PROF[cfg.seats[i]] }));
+  const villains = others.map((pos, i) => { const p = PROF[cfg.seats[i]]; return { pos, p, stk: vilStk(p, S, bbv) }; });
   const before = villains.filter((v) => ORDER[v.pos] < ORDER[heroPos]);
   const after = villains.filter((v) => ORDER[v.pos] > ORDER[heroPos]);
   const base = { hu, S, bbv, openBB, mode: cfg.mode, rfiT: RFIT[heroPos] };
@@ -656,7 +693,7 @@ function genScenario(cfg, filter, tries = 0) {
     const agg = pool.reduce((a, b) => (a.p.vsRaise.r >= b.p.vsRaise.r ? (Math.random() < 0.6 ? a : b) : b));
     before.forEach((v) => (v.act = "folds"));
     agg.act = `3-bets ${D(tbC)}`;
-    return { ...base, effBB: (S - tbC), heroPos, hand, stage: "vs3bet", aggP: agg.p, aggPos: agg.pos, potBB: (openC + tbC + 1 + sb - blindC(heroPos, bbv) - blindC(agg.pos, bbv)), pre: `You open ${D(openC)} from the ${heroPos}`, villains };
+    return { ...base, effBB: effVs(S, agg.stk, tbC), aggStk: agg.stk, heroPos, hand, stage: "vs3bet", aggP: agg.p, aggPos: agg.pos, potBB: (openC + tbC + 1 + sb - blindC(heroPos, bbv) - blindC(agg.pos, bbv)), pre: `You open ${D(openC)} from the ${heroPos}`, villains };
   }
   let opener = null;
   if (filter === "vsOpen" && before.length) {
@@ -675,7 +712,7 @@ function genScenario(cfg, filter, tries = 0) {
     const coldCallers = [];
     for (const v of between) if (coldCallers.length < 2 && Math.random() < Math.min(0.55, v.p.vsRaise.c * 0.55)) { v.act = `calls ${D(openC)}`; coldCallers.push(v); }
     const pot = 1 + sb + openC * (1 + coldCallers.length) - blindC(opener.pos, bbv);
-    return { ...base, effBB: (S - openC), heroPos, hand: dealBiased(foldBoundary("vsOpen", { openerPos: opener.pos, heroPos, hu, mode: cfg.mode, openBB, bbv })), stage: "vsOpen", openerPos: opener.pos, openerP: opener.p, coldCallers, potBB: pot, villains };
+    return { ...base, effBB: effVs(S, opener.stk, openC), effPre: Math.min(S, opener.stk || S), heroPos, hand: dealBiased(foldBoundary("vsOpen", { openerPos: opener.pos, heroPos, hu, mode: cfg.mode, openBB, bbv })), stage: "vsOpen", openerPos: opener.pos, openerP: opener.p, openerStk: opener.stk, coldCallers, potBB: pot, villains };
   }
   if (filter === "rfi" || !filter || filter === "all") {
     if (heroPos === "BB") return tries < 30 ? genScenario(cfg, filter, tries + 1) : genScenario(cfg, "rfi", 31);
@@ -707,7 +744,7 @@ function genHand(cfg, table) {
   const openBB0 = OPEN(hu, bbv), openC0 = chipBB(openBB0, bbv);
   const D = (x) => usd(x * bbv);
   const villains = [];
-  for (let s = 0; s < N; s++) { if (s === table.heroSeat) continue; villains.push({ pos: posOf(s), p: PROF[table.seats[s]], seat: s }); }
+  for (let s = 0; s < N; s++) { if (s === table.heroSeat) continue; const p = PROF[table.seats[s]]; villains.push({ pos: posOf(s), p, seat: s, stk: vilStk(p, S, bbv) }); }
   const roster = [];
   for (let s = 0; s < N; s++) roster.push({ seat: s, pos: posOf(s), hero: s === table.heroSeat, profileId: s === table.heroSeat ? null : table.seats[s] });
   const before = villains.filter((v) => ORDER[v.pos] < ORDER[heroPos]).sort((a, b) => ORDER[a.pos] - ORDER[b.pos]);
@@ -717,7 +754,7 @@ function genHand(cfg, table) {
   villains.forEach((v) => { v.act = opener && v === opener ? `opens ${D(openC0)}` : ORDER[v.pos] < ORDER[heroPos] ? "folds" : undefined; });
   const heroBlind = blindC(heroPos, bbv) || 0;
   if (opener) {
-    return { ...base, heroPos, hand: dealBiased(foldBoundary("vsOpen", { openerPos: opener.pos, heroPos, hu, mode: cfg.mode, openBB: openBB0, bbv })), stage: "vsOpen", openerPos: opener.pos, openerP: opener.p, effBB: (S - openC0), potBB: (1 + sb + openC0 - blindC(opener.pos, bbv)), villains };
+    return { ...base, heroPos, hand: dealBiased(foldBoundary("vsOpen", { openerPos: opener.pos, heroPos, hu, mode: cfg.mode, openBB: openBB0, bbv })), stage: "vsOpen", openerPos: opener.pos, openerP: opener.p, openerStk: opener.stk, effBB: effVs(S, opener.stk, openC0), effPre: Math.min(S, opener.stk || S), potBB: (1 + sb + openC0 - blindC(opener.pos, bbv)), villains };
   }
   if (heroPos === "BB") { // folded around to the BB — a walk, no decision
     return { ...base, heroPos, hand: deal(), stage: "walk", effBB: (S - 1), potBB: (1 + sb), villains };
@@ -739,29 +776,29 @@ function genPostDrill(cfg, filter) {
   if (hu) {
     const vp = PROF[cfg.hu];
     heroPos = asAggro ? "SB" : "BB";
-    vil = { pos: asAggro ? "BB" : "SB", p: vp };
+    vil = { pos: asAggro ? "BB" : "SB", p: vp, stk: vilStk(vp, S, bbv) };
     villains = [vil];
   } else {
     const POSN = Tb.pos;
     if (asAggro) {
       const openable = POSN.slice(0, -1);
       heroPos = openable[(Math.random() * openable.length) | 0];
-      villains = POSN.filter((p) => p !== heroPos).map((pos, i) => ({ pos, p: PROF[cfg.seats[i]] }));
+      villains = POSN.filter((p) => p !== heroPos).map((pos, i) => { const p = PROF[cfg.seats[i]]; return { pos, p, stk: vilStk(p, S, bbv) }; });
       const later = villains.filter((v) => ORDER[v.pos] > ORDER[heroPos]);
       vil = later[(Math.random() * later.length) | 0];
     } else {
       const heroIdx = 1 + ((Math.random() * (POSN.length - 1)) | 0);
       heroPos = POSN[heroIdx];
-      villains = POSN.filter((p) => p !== heroPos).map((pos, i) => ({ pos, p: PROF[cfg.seats[i]] }));
+      villains = POSN.filter((p) => p !== heroPos).map((pos, i) => { const p = PROF[cfg.seats[i]]; return { pos, p, stk: vilStk(p, S, bbv) }; });
       const bef = villains.filter((v) => ORDER[v.pos] < ORDER[heroPos]);
       vil = bef[(Math.random() * bef.length) | 0];
     }
     villains.forEach((v) => { if (v !== vil) v.act = "folds"; });
   }
   const pot0 = srpPot(openC, heroPos, vil.pos, bbv);
-  /* fast-forward flop+turn bets (chip-rounded), capped by remaining stack */
+  /* fast-forward flop+turn bets (chip-rounded), capped by the true effective stack */
   const ff = () => {
-    let eff = (S - openC), pot = pot0;
+    let eff = effVs(S, vil.stk, openC), pot = pot0;
     for (const st of ["flop", "turn"]) {
       const b = Math.min(chipBB(POSTBET[st] * pot, bbv), eff);
       eff = (eff - b);
@@ -780,7 +817,7 @@ function genPostDrill(cfg, filter) {
       return postSeed({ ...common, effBB: eff, hand, stage: "riverBet", pre: "You bet flop & turn — both called" }, "river", pot);
     }
     vil.act = `calls ${D(openC)}`;
-    return postSeed({ ...common, effBB: (S - openC), hand, stage: "cbet", pre: `You open ${D(openC)} · ${vil.pos} calls` }, "flop", pot0);
+    return postSeed({ ...common, effBB: effVs(S, vil.stk, openC), hand, stage: "cbet", pre: `You open ${D(openC)} · ${vil.pos} calls` }, "flop", pot0);
   }
   const d = defendChart(vil.pos, heroPos, hu, cfg.mode);
   const hand = sampleBetween(d.r + 0.5, d.c - 0.5);
@@ -791,7 +828,7 @@ function genPostDrill(cfg, filter) {
     { const bi = betInfo(sc); vil.act = `bets ${D(bi.b)} (${pctLbl(bi.frac)})`; }
     return sc;
   }
-  const sc = postSeed({ ...common, effBB: (S - openC), hand, openerPos: vil.pos, openerP: vil.p, vFrac: pickVSize(vil.p, "flop"), stage: "vsCbet", pre: `${vil.p.name} opens ${D(openC)} · you call in the ${heroPos}` }, "flop", pot0);
+  const sc = postSeed({ ...common, effBB: effVs(S, vil.stk, openC), hand, openerPos: vil.pos, openerP: vil.p, vFrac: pickVSize(vil.p, "flop"), stage: "vsCbet", pre: `${vil.p.name} opens ${D(openC)} · you call in the ${heroPos}` }, "flop", pot0);
   { const bi = betInfo(sc); vil.act = `c-bets ${D(bi.b)} (${pctLbl(bi.frac)})`; }
   return sc;
 }
@@ -818,43 +855,57 @@ function continuation(sc, action, bbv) {
     const field = sc.field && sc.field.length ? sc.field : [sc.vil];
     const mw = field.length;
     if (action === "check") {
-      const winP = winPMw((100 - sc.cls.rank) / 100, mw);
+      const winP = winPMw((100 - sc.cls.rank) / 100, mw + (sc.aiN || 0));
       const won = Math.random() < winP;
-      const r2 = won ? `your ${sc.cls.label} holds — ${money(sc.potBB)} shipped` : mw > 1 ? "someone in the field edges the showdown" : "villain edges the showdown";
+      const r2 = won ? `your ${sc.cls.label} holds — ${money(sc.potBB)} shipped` : mw + (sc.aiN || 0) > 1 ? "someone in the field edges the showdown" : "villain edges the showdown";
       return { text: `You check — it checks through: ${r2}.`, result: res(won, sc.potBB) };
     }
     const opts = heroBetOpts(sc);
     const chosen = opts.find((o) => o.id === action) || opts[0];
     const bet = chosen.b, betAllIn = chosen.allIn, frac = chosen.frac;
     // Everyone still in responds in order; a raise anywhere ends the drill hand.
-    const resp = field.map((v) => { let r = respondToBet(v.p, frac); if (betAllIn && r === "r") r = "c"; return { v, r }; });
+    // Short stacks respond stack-aware: priced-in players stick, and a bet that
+    // covers someone becomes a call all-in for less. aiN carries earlier-street
+    // all-ins into every later showdown count.
+    const aiN = sc.aiN || 0;
+    const resp = field.map((v) => { const x = respondToBetStk(v, frac, bet); let r = x.r; if (betAllIn && r === "r") r = "c"; return { v, r, cap: x.cap }; });
     const raiser = resp.find((x) => x.r === "r");
     if (raiser) return { text: `You bet ${money(bet)} — ${raiser.v.p.icon} ${raiser.v.pos} raises${mw > 1 ? " (field folds)" : ""}. Raise-defense drills are next on the roadmap; hand logged.`, result: null };
-    const cs = resp.filter((x) => x.r === "c").map((x) => x.v);
+    const cs = resp.filter((x) => x.r === "c");
     if (!cs.length) {
+      if (aiN) { // earlier all-ins can't fold — the pot still goes to showdown
+        const base = Math.min(0.95, Math.max(0.08, (100 - sc.cls.rank) / 100));
+        const won = Math.random() < winPMw(base, aiN);
+        return { text: `Everyone with chips folds — showdown vs the all-in player${aiN > 1 ? "s" : ""}: ${won ? `your ${sc.cls.label} holds — ${money(sc.potBB)} shipped` : "they got there"}.`, result: res(won, sc.potBB) };
+      }
       const who = mw > 1 ? "the whole field folds" : `${field[0].p.icon} ${field[0].pos} folds`;
       return { text: `You bet ${money(bet)} (${pctLbl(frac)}) — ${who}. ${money(sc.potBB)} your way.`, result: +(sc.potBB / 2) };
     }
-    const newPot = sc.potBB + bet * (1 + cs.length);
-    if (betAllIn || sc.street === "river") {
+    const capped = cs.filter((x) => x.cap != null), live = cs.filter((x) => x.cap == null).map((x) => x.v);
+    const potAdd = cs.reduce((s, x) => s + Math.min(bet, x.cap == null ? bet : x.cap), 0);
+    const newPot = sc.potBB + bet + potAdd;
+    const aiNote = capped.length ? `${capped.map((x) => `${x.v.p.icon} ${x.v.pos} calls all-in for ${money(Math.min(bet, x.cap))}`).join("; ")}${live.length ? "; " : ""}` : "";
+    if (betAllIn || sc.street === "river" || !live.length) {
       const base = Math.min(0.95, Math.max(0.08, (100 - sc.cls.rank) / 100 - (sc.street === "river" ? 0.18 : 0) - Math.max(0, frac - 0.66) * 0.12));
-      const winP = winPMw(base, cs.length);
-      const who = cs.length > 1 ? `${cs.length} callers` : `${cs[0].p.icon} ${cs[0].pos}`;
-      const lead = betAllIn && sc.street !== "river" ? `All-in ${money(bet)} — ${who} call${cs.length > 1 ? "" : "s"}. Board runs out` : `${who} call${cs.length > 1 ? "" : "s"} ${money(bet)}. Showdown`;
+      const winP = winPMw(base, cs.length + aiN);
+      const liveWho = live.length > 1 ? `${live.length} callers` : live.length ? `${live[0].p.icon} ${live[0].pos}` : "";
+      const lead = sc.street !== "river" ? `${aiNote}${liveWho ? `${liveWho} call${live.length > 1 ? "" : "s"} ${money(bet)}` : ""} — board runs out` : `${aiNote}${liveWho ? `${liveWho} call${live.length > 1 ? "" : "s"} ${money(bet)}` : ""}. Showdown`;
       const won = Math.random() < winP;
-      const r2 = won ? `your ${sc.cls.label} is good — ${money(newPot)} shipped` : cs.length > 1 ? "the field shows better" : "villain shows better";
+      const r2 = won ? `your ${sc.cls.label} is good — ${money(newPot)} shipped` : cs.length + aiN > 1 ? "the field shows better" : "villain shows better";
       return { text: `${lead}: ${r2}.`, result: res(won, newPot) };
     }
     const nextStreet = sc.street === "flop" ? "turn" : "river";
     const patched = sc.villains.map((x) => {
-      if (cs.some((c) => c.pos === x.pos)) return { ...x, act: `calls ${usd(bet * bv)}` };
+      const hit = cs.find((c) => c.v.pos === x.pos);
+      if (hit) return { ...x, stk: hit.cap == null ? (x.stk == null ? undefined : x.stk - bet) : 0, act: hit.cap == null ? `calls ${usd(bet * bv)}` : `all-in ${usd(Math.min(bet, hit.cap) * bv)}` };
       if (field.some((f) => f.pos === x.pos)) return { ...x, act: "folds" };
       return x;
     });
-    const who = cs.length > 1 ? `${cs.map((c) => `${c.p.icon} ${c.pos}`).join(" + ")} call` : `${cs[0].p.icon} ${cs[0].pos} calls`;
+    const liveNext = live.map((v) => ({ ...v, stk: v.stk == null ? undefined : v.stk - bet }));
+    const who = live.length > 1 ? `${live.map((c) => `${c.p.icon} ${c.pos}`).join(" + ")} call` : `${live[0].p.icon} ${live[0].pos} calls`;
     return {
-      text: `${who} ${money(bet)}. ${nextStreet === "turn" ? "Turn" : "River"}…`,
-      nextSc: postSeed({ ...sc, effBB: (sc.effBB - bet), villains: patched, field: cs, vil: cs[0], stage: nextStreet === "turn" ? "barrel" : "riverBet" }, nextStreet, newPot),
+      text: `${aiNote}${who} ${money(bet)}. ${nextStreet === "turn" ? "Turn" : "River"}…`,
+      nextSc: postSeed({ ...sc, effBB: (sc.effBB - bet), aiN: aiN + capped.length, villains: patched, field: liveNext, vil: liveNext[0], stage: nextStreet === "turn" ? "barrel" : "riverBet" }, nextStreet, newPot),
     };
   }
 
@@ -911,13 +962,13 @@ function continuation(sc, action, bbv) {
         if (Math.random() < Math.min(0.6, v.p.rfi * 0.28)) {
           const isoC = chipBB(openBBc + 3, bv); // iso raise: open size + ~3bb for the limp
           const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `iso to ${usd(isoC * bv)}` } : x.act ? x : { ...x, act: "folds" }));
-          return { text: `${v.p.icon} ${v.pos} raises your limp to ${money(isoC)}.`, nextSc: { ...sc, stage: "vsOpen", openBB: isoC, openerPos: v.pos, openerP: v.p, villains: patched, effBB: (sc.S - isoC), potBB: (limpC + isoC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(v.pos, bv)) } };
+          return { text: `${v.p.icon} ${v.pos} raises your limp to ${money(isoC)}.`, nextSc: { ...sc, stage: "vsOpen", openBB: isoC, openerPos: v.pos, openerP: v.p, villains: patched, effBB: effVs(sc.S, v.stk, isoC), openerStk: v.stk, effPre: Math.min(sc.S, v.stk || sc.S), potBB: (limpC + isoC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(v.pos, bv)) } };
         }
       }
       const bb = sc.villains.find((x) => x.pos === "BB");
       const nOthers = (sc.limpersIn || []).length; // limpers ahead see the flop too
       const potLimp = ((2 + nOthers) * limpC + sbv - blindC(sc.heroPos, bv));
-      const sc2 = postSeed({ ...sc, vil: bb, defMw: 1 + nOthers, openerPos: "BB", openerP: bb.p, ip: postIP(sc.heroPos, "BB"), effBB: (sc.S - limpC), vFrac: 0.33, stage: "vsCbet", pre: "Limped pot — BB checks, you're in a family pot", villains: sc.villains.map((x) => (x.pos === "BB" ? { ...x, act: "checks" } : x.act && x.act.indexOf("limps") >= 0 ? x : x.act ? x : { ...x, act: "folds" })) }, "flop", potLimp);
+      const sc2 = postSeed({ ...sc, vil: bb, defMw: 1 + nOthers, openerPos: "BB", openerP: bb.p, ip: postIP(sc.heroPos, "BB"), effBB: effVs(sc.S, bb.stk, limpC), vFrac: 0.33, stage: "vsCbet", pre: "Limped pot — BB checks, you're in a family pot", villains: sc.villains.map((x) => (x.pos === "BB" ? { ...x, act: "checks" } : x.act && x.act.indexOf("limps") >= 0 ? x : x.act ? x : { ...x, act: "folds" })) }, "flop", potLimp);
       const bi = betInfo(sc2);
       sc2.villains = sc2.villains.map((x) => (x.pos === "BB" ? { ...x, act: `bets ${usd(bi.b * bv)} (${pctLbl(bi.frac)})` } : x));
       sc2.vil = sc2.villains.find((x) => x.pos === "BB");
@@ -936,7 +987,7 @@ function continuation(sc, action, bbv) {
       if (r === "r") {
         const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `3-bets ${usd(tbC * bv)}` } : x.act && x.act !== "folds" ? x : { ...x, act: "folds" }));
         return { text: `You ${verb} ${money(openC)}. ${v.p.icon} ${v.pos} 3-bets to ${money(tbC)}.`,
-          nextSc: { ...sc, stage: "vs3bet", aggP: v.p, aggPos: v.pos, villains: patched, effBB: (sc.S - tbC), potBB: (openC + tbC + nLimp + deadCalls + 1 + sbv - blindC(sc.heroPos, bv) - blindC(v.pos, bv)) } };
+          nextSc: { ...sc, stage: "vs3bet", aggP: v.p, aggPos: v.pos, villains: patched, aggStk: v.stk, effBB: effVs(sc.S, v.stk, tbC), potBB: (openC + tbC + nLimp + deadCalls + 1 + sbv - blindC(sc.heroPos, bv) - blindC(v.pos, bv)) } };
       }
       if (r === "c" && callers.length < 3) {
         callers.push({ pos: v.pos, p: v.p, limped });
@@ -952,7 +1003,7 @@ function continuation(sc, action, bbv) {
     const field = callers.map((c) => ({ pos: c.pos, p: c.p }));
     const potFlop = sc.potBB + openC + deadCalls;
     const ip = field.every((v) => postIP(sc.heroPos, v.pos));
-    const sc2 = postSeed({ ...sc, villains: patched, field, vil: field[0], ip, effBB: (sc.S - openC), stage: "cbet" }, "flop", potFlop);
+    const sc2 = postSeed({ ...sc, villains: patched, field, vil: field[0], ip, effBB: effVs(sc.S, Math.max(...field.map((f) => f.stk || sc.S)), openC), stage: "cbet" }, "flop", potFlop);
     const who = callers.length === 1 ? `${field[0].p.icon} ${field[0].pos} calls` : `${callers.map((c) => `${c.p.icon} ${c.pos}`).join(" + ")} call`;
     return { text: `You ${verb} ${money(openC)}. ${who} — ${callers.length + 1}-way flop…`, nextSc: sc2 };
   }
@@ -966,7 +1017,7 @@ function continuation(sc, action, bbv) {
       // Multiway pot: everyone's money is already in sc.potBB; hero completes.
       const pot0 = nC ? sc.potBB + openC - blindC(sc.heroPos, bv) : srpPot(openC, sc.heroPos, sc.openerPos, bv);
       if (Math.random() < sc.openerP.cbet) {
-        const sc2 = postSeed({ ...sc, vil: v, defMw: nC + 1, ip: postIP(sc.heroPos, sc.openerPos), effBB: (sc.S - openC), vFrac: pickVSize(sc.openerP, "flop"), stage: "vsCbet" }, "flop", pot0);
+        const sc2 = postSeed({ ...sc, vil: v, defMw: nC + 1, ip: postIP(sc.heroPos, sc.openerPos), effBB: effVs(sc.S, sc.openerStk, openC), vFrac: pickVSize(sc.openerP, "flop"), stage: "vsCbet" }, "flop", pot0);
         const bi = betInfo(sc2);
         sc2.villains = sc2.villains.map((x) => (x.pos === v.pos ? { ...x, act: `c-bets ${usd(bi.b * bv)} (${pctLbl(bi.frac)})` } : x));
         sc2.vil = sc2.villains.find((x) => x.pos === v.pos);
@@ -977,12 +1028,12 @@ function continuation(sc, action, bbv) {
     const r = respond(sc.openerP.vs3);
     if (r === "r") {
       const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `4-bets ${usd(fourC * bv)}` } : x));
-      return { text: `You ${raiseWord} ${money(my3)}. ${sc.openerP.icon} ${sc.openerPos} 4-bets to ${money(fourC)}.`, nextSc: { ...sc, stage: "vs4bet", aggP: sc.openerP, aggPos: sc.openerPos, villains: patched, effBB: (sc.S - fourC), potBB: (my3 + fourC + nC * openC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.openerPos, bv)) } };
+      return { text: `You ${raiseWord} ${money(my3)}. ${sc.openerP.icon} ${sc.openerPos} 4-bets to ${money(fourC)}.`, nextSc: { ...sc, stage: "vs4bet", aggP: sc.openerP, aggPos: sc.openerPos, villains: patched, aggStk: sc.openerStk, effBB: effVs(sc.S, sc.openerStk, fourC), potBB: (my3 + fourC + nC * openC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.openerPos, bv)) } };
     }
     if (r === "c") {
       // Cold-callers rarely continue vs a squeeze — their dead money sweetens the pot.
       const pot3 = (my3 + openC + nC * openC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.openerPos, bv));
-      const sc2 = postSeed({ ...sc, vil: v, field: [v], ip: postIP(sc.heroPos, sc.openerPos), effBB: (sc.S - my3), stage: "cbet", villains: sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `calls your ${raiseWord}` } : cold.some((c) => c.pos === x.pos) ? { ...x, act: "folds" } : x)) }, "flop", pot3);
+      const sc2 = postSeed({ ...sc, vil: v, field: [v], ip: postIP(sc.heroPos, sc.openerPos), effBB: effVs(sc.S, sc.openerStk, my3), stage: "cbet", villains: sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `calls your ${raiseWord}` } : cold.some((c) => c.pos === x.pos) ? { ...x, act: "folds" } : x)) }, "flop", pot3);
       return { text: `You ${raiseWord} ${money(my3)}. ${sc.openerP.icon} calls${nC ? "; the callers get out" : ""}. Flop, ${money(pot3)} pot…`, nextSc: sc2 };
     }
     if (nC) {
@@ -990,7 +1041,7 @@ function continuation(sc, action, bbv) {
       const sticky = cold.find((c) => Math.random() < Math.max(0.2, Math.min(0.45, c.p.vsRaise.c * 0.4)));
       if (sticky) {
         const potS = (my3 * 2 + openC + (nC - 1) * openC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sticky.pos, bv));
-        const sc2 = postSeed({ ...sc, vil: { pos: sticky.pos, p: sticky.p }, field: [{ pos: sticky.pos, p: sticky.p }], ip: postIP(sc.heroPos, sticky.pos), effBB: (sc.S - my3), stage: "cbet", villains: sc.villains.map((x) => (x.pos === sticky.pos ? { ...x, act: "calls your squeeze" } : x.pos === v.pos ? { ...x, act: "folds" } : x)) }, "flop", potS);
+        const sc2 = postSeed({ ...sc, vil: { pos: sticky.pos, p: sticky.p }, field: [{ pos: sticky.pos, p: sticky.p }], ip: postIP(sc.heroPos, sticky.pos), effBB: effVs(sc.S, sticky.stk, my3), stage: "cbet", villains: sc.villains.map((x) => (x.pos === sticky.pos ? { ...x, act: "calls your squeeze" } : x.pos === v.pos ? { ...x, act: "folds" } : x)) }, "flop", potS);
         return { text: `You squeeze ${money(my3)}. ${sc.openerP.icon} folds, but ${sticky.p.icon} ${sticky.pos} peels. Flop, ${money(potS)} pot…`, nextSc: sc2 };
       }
     }
@@ -1000,7 +1051,7 @@ function continuation(sc, action, bbv) {
     const v = { pos: sc.aggPos, p: sc.aggP };
     if (action === "call") {
       const pot3 = (2 * tbC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.aggPos, bv));
-      const sc2 = postSeed({ ...sc, vil: v, ip: postIP(sc.heroPos, sc.aggPos), effBB: (sc.S - tbC), vFrac: pickVSize(sc.aggP, "flop"), stage: "vsCbet" }, "flop", pot3);
+      const sc2 = postSeed({ ...sc, vil: v, ip: postIP(sc.heroPos, sc.aggPos), effBB: effVs(sc.S, sc.aggStk, tbC), vFrac: pickVSize(sc.aggP, "flop"), stage: "vsCbet" }, "flop", pot3);
       const bi = betInfo(sc2);
       sc2.villains = sc2.villains.map((x) => (x.pos === v.pos ? { ...x, act: `c-bets ${usd(bi.b * bv)} (${pctLbl(bi.frac)})` } : x));
       sc2.vil = sc2.villains.find((x) => x.pos === v.pos);
@@ -1009,11 +1060,11 @@ function continuation(sc, action, bbv) {
     const r = respond(sc.aggP.vs3);
     if (r === "r") {
       const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: "jams" } : x));
-      return { text: `${sc.aggP.icon} ${sc.aggPos} jams — ${sc.S}bb effective.`, nextSc: { ...sc, stage: "vsJam", aggP: sc.aggP, aggPos: sc.aggPos, villains: patched, effBB: 0, potBB: (fourC + sc.S + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.aggPos, bv)) } };
+      return { text: `${sc.aggP.icon} ${sc.aggPos} jams — ${Math.round(Math.min(sc.S, sc.aggStk || sc.S))}bb effective.`, nextSc: { ...sc, stage: "vsJam", aggP: sc.aggP, aggPos: sc.aggPos, villains: patched, effBB: 0, potBB: (fourC + Math.min(sc.S, sc.aggStk || sc.S) + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.aggPos, bv)) } };
     }
     if (r === "c") {
       const pot4 = (2 * fourC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.aggPos, bv));
-      const sc2 = postSeed({ ...sc, vil: v, ip: postIP(sc.heroPos, sc.aggPos), effBB: (sc.S - fourC), stage: "cbet", villains: sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: "calls your 4-bet" } : x)) }, "flop", pot4);
+      const sc2 = postSeed({ ...sc, vil: v, ip: postIP(sc.heroPos, sc.aggPos), effBB: effVs(sc.S, sc.aggStk, fourC), stage: "cbet", villains: sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: "calls your 4-bet" } : x)) }, "flop", pot4);
       return { text: `${sc.aggP.icon} calls your 4-bet ${money(fourC)}. Flop, ${money(pot4)} pot…`, nextSc: sc2 };
     }
     return { text: `${sc.aggP.icon} folds to your 4-bet — you collect ${money(sc.potBB)}.`, result: +(sc.potBB / 2) };
@@ -1022,15 +1073,15 @@ function continuation(sc, action, bbv) {
     const v = { pos: sc.aggPos, p: sc.aggP };
     if (action === "call") {
       const newPot = (sc.potBB + fourC - tbC);
-      const sc2 = postSeed({ ...sc, vil: v, ip: postIP(sc.heroPos, sc.aggPos), effBB: (sc.S - fourC), vFrac: pickVSize(sc.aggP, "flop"), stage: "vsCbet" }, "flop", newPot);
+      const sc2 = postSeed({ ...sc, vil: v, ip: postIP(sc.heroPos, sc.aggPos), effBB: effVs(sc.S, sc.aggStk, fourC), vFrac: pickVSize(sc.aggP, "flop"), stage: "vsCbet" }, "flop", newPot);
       const bi = betInfo(sc2);
       sc2.villains = sc2.villains.map((x) => (x.pos === v.pos ? { ...x, act: `c-bets ${usd(bi.b * bv)} (${pctLbl(bi.frac)})` } : x));
       sc2.vil = sc2.villains.find((x) => x.pos === v.pos);
       return { text: `You call the 4-bet, ${money(newPot)} pot. ${sc.aggP.icon} fires the flop.`, nextSc: sc2 };
     }
     const r = respond(sc.aggP.vs3);
-    if (r === "f") return { text: `You jam ${sc.S}bb — ${sc.aggP.icon} folds. Huge pot your way.`, result: +(sc.potBB / 2) };
-    { const won = Math.random() < 0.5; return { text: `You jam — ${sc.aggP.icon} calls. ${sc.S * 2}bb in the middle; variance decides.`, result: res(won, sc.potBB + 2 * (sc.S - fourC)) }; }
+    if (r === "f") return { text: `You jam ${Math.round(Math.min(sc.S, sc.aggStk || sc.S))}bb — ${sc.aggP.icon} folds. Huge pot your way.`, result: +(sc.potBB / 2) };
+    { const won = Math.random() < 0.5; return { text: `You jam — ${sc.aggP.icon} calls. ${Math.round(Math.min(sc.S, sc.aggStk || sc.S) * 2)}bb in the middle; variance decides.`, result: res(won, sc.potBB + 2 * (Math.min(sc.S, sc.aggStk || sc.S) - fourC)) }; }
   }
   { const won = Math.random() < 0.5; return { text: `Stacks in — ${money(sc.potBB || sc.S * 2)} showdown. Variance decides; hand logged.`, result: res(won, sc.potBB || sc.S * 2) }; }
 }
@@ -1173,6 +1224,7 @@ function VChip({ v }) {
       opacity: v.act === "folds" ? 0.4 : 1 }}>
       <span style={{ fontSize: 14 }}>{v.p.icon}</span>
       <span style={{ fontFamily: DISP, fontWeight: 600, fontSize: 13, letterSpacing: 0.5, color: T.bone }}>{v.pos}</span>
+      {v.stk != null && <span style={{ fontFamily: MONO, fontSize: 9, color: v.stk < 45 ? T.heart : v.stk >= 200 ? T.club : T.dim }}>{Math.round(v.stk)}bb</span>}
       {v.act && <span style={{ fontFamily: MONO, fontSize: 10, color: hot ? T.brass : T.dim }}>{v.act}</span>}
     </div>
   );
@@ -1241,6 +1293,7 @@ function TableView({ sc, onPeek }) {
                 color: isHero ? "#171309" : T.bone, border: `1px solid ${isHero ? T.brass : stillIn ? T.brass : T.line}` }}>
               {isHero ? "YOU" : <span style={{ fontSize: 15 }}>{(prof && prof.icon) || "·"}</span>}
               <div style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: 0.5, marginTop: 1, color: isHero ? "#171309" : T.dim }}>{seat.pos}</div>
+              {!isHero && v && v.stk != null && !folded && <div style={{ fontFamily: MONO, fontSize: 8, marginTop: 1, color: v.stk < 45 ? T.heart : v.stk >= 200 ? T.club : T.dim }}>{Math.round(v.stk)}bb</div>}
             </div>
             {v && v.act && v.act !== "folds" && <div style={{ fontFamily: MONO, fontSize: 8.5, color: T.brass, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{v.act}</div>}
             {seat.seat === btn && <div style={{ position: "absolute", right: -6, top: -6, width: 15, height: 15, borderRadius: 8, background: T.bone, color: "#171309", fontFamily: DISP, fontWeight: 700, fontSize: 9, lineHeight: "15px", border: "1px solid #0007" }}>D</div>}
@@ -1328,10 +1381,13 @@ function adviceFor(sc, zones, bbv) {
     const lead = pct < zones[0].to ? `Top ${rr}% vs this open — 3-bet. Standard ${usd(chipBB(threeBetBB(ob, "s"), sc.bbv || 2) * (sc.bbv || 2))} or larger ${usd(chipBB(threeBetBB(ob, "b"), sc.bbv || 2) * (sc.bbv || 2))} to punish a big open and cap the pot.`
       : pct < zones[1].to ? `Inside the defend-to-${c}% band — ${sc.hand.label} is a call at this price.`
       : `Below the ${c}% defense line vs a ${sc.openerPos} open — let it go.`;
+    const eo = sc.effPre;
+    const stackNote = eo != null && eo < 40 ? ` Only ${Math.round(eo)}bb effective vs this stack — set-mining and speculative flats lose their implied odds; lean 3-bet-or-fold.`
+      : eo != null && eo >= 250 ? ` ${Math.round(eo)}bb effective — deep implied odds pay suited and connected calls, but deep money also punishes dominated hands; position is worth double here.` : "";
     const alt = sc.openerP.rfi >= 1.2 ? `Consider: ${sc.openerP.name} opens ${pc(sc.openerP.rfi)} of GTO width — attack wider than the chart.`
       : sc.openerP.rfi <= 0.75 ? `Consider: a ${sc.openerP.name} open is top-of-deck — tighten these defends.`
       : `Consider: widen vs loose openers, tighten vs nits — the seat matters more than the cards.`;
-    return `${lead}${priceNote} ${alt}`;
+    return `${lead}${priceNote}${stackNote} ${alt}`;
   }
   if (sc.stage === "vs3bet" || sc.stage === "vs4bet" || sc.stage === "vsJam") {
     const P = sc.aggP;
@@ -1360,12 +1416,16 @@ function adviceFor(sc, zones, bbv) {
     else if (pct <= zones[0].to) region = sc.stage === "riverBet" && zone.sz === "b" ? `your ${sc.cls.label} wants the overbet — their calling range is capped` : `your ${sc.cls.label} bets for value and protection`;
     else region = `your ${sc.cls.label} is a natural bluff: equity when called, folds out better air`;
     const sizing = zone.a === "bet" ? (zone.sizes.length > 1 ? ` Both sizes mix here (${zone.sz === "s" ? "small" : "big"} primary — the other gives up a sliver).` : zone.sz === "b" ? ` Big only — small lets draws in cheap.` : ` Small only — big folds out everything worse.`) : "";
-    const sprTxt = spr < 2.5 && zone.a === "bet" ? ` At SPR ${spr.toFixed(1)} you're near commitment — sizing up stacks them.` : "";
+    const sprTxt = spr < 2.5 && zone.a === "bet" ? ` At SPR ${spr.toFixed(1)} you're near commitment — sizing up stacks them.`
+      : spr >= 13 && zone.a === "bet" ? ` SPR ${spr.toFixed(0)} — deep water: one pair is a bluff-catcher here, not a stack-off; big money should mean nutted hands or real equity.` : "";
     const mwTxt = mwA ? ` ${mwA + 1}-way pot: someone always has a piece, so value bets tighten and most bluffs become checks — c-betting your whole range is a heads-up play, not a family-pot play.` : "";
+    const stks = (sc.field && sc.field.length ? sc.field : [sc.vil]).map((x) => x.stk).filter((x) => x != null);
+    const asymTxt = stks.length > 1 && Math.min(...stks) < 45 && Math.max(...stks) > 140
+      ? ` The ${Math.round(Math.min(...stks))}bb stack is priced in — aim your value at them; the ${Math.round(Math.max(...stks))}bb stack is who your big bets are really playing against.` : "";
     const alt = v.vsBet.r >= 0.18 ? ` Consider: check more vs ${v.name} — raises ${pc(v.vsBet.r)} of bets, and you hate facing it.`
       : v.vsBet.c >= 0.7 ? ` Consider: ${v.name} calls ${pc(v.vsBet.c)} — go value-heavy, thin-bet bigger, bluff less.`
       : ` Consider: keep firing brick turns; slow down on cards that smash the caller's range.`;
-    return `${TXT[sc.tb] || TXT.low}: ${region}.${sizing}${mwTxt}${sprTxt}${alt}`;
+    return `${TXT[sc.tb] || TXT.low}: ${region}.${sizing}${mwTxt}${asymTxt}${sprTxt}${alt}`;
   }
   const bi = betInfo(sc);
   const bv2 = sc.bbv || bbv;
@@ -1961,7 +2021,7 @@ export default function App() {
 
   const act = (a) => {
     const post = POST_STAGES.includes(sc.stage);
-    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
+    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
     const pct = post ? sc.cls.rank : sc.hand.pct;
     const g = AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
     const cont = continuation(sc, a, bbv);
@@ -2032,7 +2092,7 @@ export default function App() {
   const openTrend = useMemo(() => (openLeak ? leakTrend(leakRecs, openLeak) : null), [openLeak, leakRecs]);
   const isPost = sc ? POST_STAGES.includes(sc.stage) : false;
   const scPct = sc ? (isPost ? sc.cls.rank : sc.hand.pct) : 0;
-  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
+  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
   const acts = sc
     ? (AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
       : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]
@@ -2441,7 +2501,7 @@ export default function App() {
               {seg("Heads-up", cfg.mode === "hu", () => setCfg({ ...cfg, mode: "hu" }), "hu")}
             </div>
 
-            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>STAKES · 200BB EFFECTIVE</div>
+            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>STAKES</div>
             <div style={{ display: "flex", gap: 6 }}>
               {STAKES.map((s, i) => (
                 <span key={s.label} className="ll-tap" onClick={() => setCfg({ ...cfg, stake: i })}
@@ -2452,7 +2512,7 @@ export default function App() {
                 </span>
               ))}
             </div>
-            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>STARTING STACK · 200BB MAX</div>
+            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>STARTING STACK · UP TO 500BB</div>
             <div style={{ display: "flex", gap: 6 }}>
               {STACK_OPTS.map((s, i) => (
                 <span key={s} className="ll-tap" onClick={() => setCfg({ ...cfg, stack: i })}
