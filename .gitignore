@@ -1,6 +1,7 @@
 node_modules/
 package-lock.json
 .build/
+tools/test/.build/
 *.log
 .DS_Store
 .vscode/

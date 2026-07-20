@@ -1,0 +1,461 @@
+{
+ "rfi CO 9max": [
+  {
+   "a": "raiseS",
+   "from": 0,
+   "to": 18.76
+  },
+  {
+   "a": "limp",
+   "from": 18.76,
+   "to": 24.76
+  },
+  {
+   "a": "fold",
+   "from": 24.76,
+   "to": 100
+  }
+ ],
+ "rfi CO +2 limpers": [
+  {
+   "a": "raiseS",
+   "from": 0,
+   "to": 16.29
+  },
+  {
+   "a": "limp",
+   "from": 16.29,
+   "to": 26.29
+  },
+  {
+   "a": "fold",
+   "from": 26.29,
+   "to": 100
+  }
+ ],
+ "rfi vs station-heavy behind": [
+  {
+   "a": "raiseS",
+   "from": 0,
+   "to": 21.58
+  },
+  {
+   "a": "limp",
+   "from": 21.58,
+   "to": 27.58
+  },
+  {
+   "a": "fold",
+   "from": 27.58,
+   "to": 100
+  }
+ ],
+ "rfi vs aggro behind": [
+  {
+   "a": "raiseS",
+   "from": 0,
+   "to": 15.95
+  },
+  {
+   "a": "limp",
+   "from": 15.95,
+   "to": 21.53
+  },
+  {
+   "a": "fold",
+   "from": 21.53,
+   "to": 100
+  }
+ ],
+ "vsOpen BTN vs CO": [
+  {
+   "a": "raiseS",
+   "from": 0,
+   "to": 3.54
+  },
+  {
+   "a": "call",
+   "from": 3.54,
+   "to": 9.9
+  },
+  {
+   "a": "fold",
+   "from": 9.9,
+   "to": 100
+  }
+ ],
+ "vsOpen vs nit opener": [
+  {
+   "a": "raiseS",
+   "from": 0,
+   "to": 2.98
+  },
+  {
+   "a": "call",
+   "from": 2.98,
+   "to": 8.34
+  },
+  {
+   "a": "fold",
+   "from": 8.34,
+   "to": 100
+  }
+ ],
+ "vsOpen vs maniac opener": [
+  {
+   "a": "raiseS",
+   "from": 0,
+   "to": 4.6
+  },
+  {
+   "a": "call",
+   "from": 4.6,
+   "to": 12.87
+  },
+  {
+   "a": "fold",
+   "from": 12.87,
+   "to": 100
+  }
+ ],
+ "vsOpen squeeze 2 callers": [
+  {
+   "a": "raiseS",
+   "from": 0,
+   "to": 2.83
+  },
+  {
+   "a": "call",
+   "from": 2.83,
+   "to": 14.26
+  },
+  {
+   "a": "fold",
+   "from": 14.26,
+   "to": 100
+  }
+ ],
+ "vsOpen short opener": [
+  {
+   "a": "raiseS",
+   "from": 0,
+   "to": 3.54
+  },
+  {
+   "a": "call",
+   "from": 3.54,
+   "to": 7.42
+  },
+  {
+   "a": "fold",
+   "from": 7.42,
+   "to": 100
+  }
+ ],
+ "vs3bet IP aggressor": [
+  {
+   "a": "raise",
+   "from": 0,
+   "to": 4.5
+  },
+  {
+   "a": "call",
+   "from": 4.5,
+   "to": 16.5
+  },
+  {
+   "a": "fold",
+   "from": 16.5,
+   "to": 100
+  }
+ ],
+ "vs3bet blind aggressor short": [
+  {
+   "a": "raise",
+   "from": 0,
+   "to": 4.4
+  },
+  {
+   "a": "call",
+   "from": 4.4,
+   "to": 9
+  },
+  {
+   "a": "fold",
+   "from": 9,
+   "to": 100
+  }
+ ],
+ "vs4bet deep": [
+  {
+   "a": "raise",
+   "from": 0,
+   "to": 1.65
+  },
+  {
+   "a": "call",
+   "from": 1.65,
+   "to": 6.05
+  },
+  {
+   "a": "fold",
+   "from": 6.05,
+   "to": 100
+  }
+ ],
+ "cbet ahi IP": [
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 0,
+   "to": 42
+  },
+  {
+   "a": "check",
+   "from": 42,
+   "to": 66
+  },
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 66,
+   "to": 90
+  },
+  {
+   "a": "check",
+   "from": 90,
+   "to": 100
+  }
+ ],
+ "cbet ahi vs station": [
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 0,
+   "to": 47.15
+  },
+  {
+   "a": "check",
+   "from": 47.15,
+   "to": 66
+  },
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 66,
+   "to": 75.6
+  },
+  {
+   "a": "check",
+   "from": 75.6,
+   "to": 100
+  }
+ ],
+ "cbet ahi vs nit": [
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 0,
+   "to": 40.82
+  },
+  {
+   "a": "check",
+   "from": 40.82,
+   "to": 66
+  },
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 66,
+   "to": 97.2
+  },
+  {
+   "a": "check",
+   "from": 97.2,
+   "to": 100
+  }
+ ],
+ "cbet wet 3way": [
+  {
+   "a": "bet",
+   "sz": "b",
+   "from": 0,
+   "to": 12.7
+  },
+  {
+   "a": "check",
+   "from": 12.7,
+   "to": 60
+  },
+  {
+   "a": "bet",
+   "sz": "b",
+   "from": 60,
+   "to": 62.2
+  },
+  {
+   "a": "check",
+   "from": 62.2,
+   "to": 100
+  }
+ ],
+ "barrel bwy": [
+  {
+   "a": "bet",
+   "sz": "b",
+   "from": 0,
+   "to": 36.8
+  },
+  {
+   "a": "check",
+   "from": 36.8,
+   "to": 63
+  },
+  {
+   "a": "bet",
+   "sz": "b",
+   "from": 63,
+   "to": 82
+  },
+  {
+   "a": "check",
+   "from": 82,
+   "to": 100
+  }
+ ],
+ "vsCbet wet 66%": [
+  {
+   "a": "raise",
+   "from": 0,
+   "to": 17
+  },
+  {
+   "a": "call",
+   "from": 17,
+   "to": 51.8
+  },
+  {
+   "a": "fold",
+   "from": 51.8,
+   "to": 100
+  }
+ ],
+ "vsCbet vs high-freq bettor": [
+  {
+   "a": "raise",
+   "from": 0,
+   "to": 17
+  },
+  {
+   "a": "call",
+   "from": 17,
+   "to": 57.5
+  },
+  {
+   "a": "fold",
+   "from": 57.5,
+   "to": 100
+  }
+ ],
+ "vsBarrel paired": [
+  {
+   "a": "raise",
+   "from": 0,
+   "to": 9.45
+  },
+  {
+   "a": "call",
+   "from": 9.45,
+   "to": 47.12
+  },
+  {
+   "a": "fold",
+   "from": 47.12,
+   "to": 100
+  }
+ ],
+ "riverBet shallow": [
+  {
+   "a": "bet",
+   "sz": "b",
+   "from": 0,
+   "to": 13
+  },
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 13,
+   "to": 36.77
+  },
+  {
+   "a": "check",
+   "from": 36.77,
+   "to": 78
+  },
+  {
+   "a": "bet",
+   "sz": "b",
+   "from": 78,
+   "to": 90
+  },
+  {
+   "a": "check",
+   "from": 90,
+   "to": 100
+  }
+ ],
+ "riverBet vs station": [
+  {
+   "a": "bet",
+   "sz": "b",
+   "from": 0,
+   "to": 13
+  },
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 13,
+   "to": 38.56
+  },
+  {
+   "a": "check",
+   "from": 38.56,
+   "to": 78
+  },
+  {
+   "a": "bet",
+   "sz": "b",
+   "from": 78,
+   "to": 82.8
+  },
+  {
+   "a": "check",
+   "from": 82.8,
+   "to": 100
+  }
+ ],
+ "riverCall 150%": [
+  {
+   "a": "call",
+   "from": 0,
+   "to": 33.36
+  },
+  {
+   "a": "fold",
+   "from": 33.36,
+   "to": 100
+  }
+ ],
+ "vsJam": [
+  {
+   "a": "call",
+   "from": 0,
+   "to": 4.5
+  },
+  {
+   "a": "fold",
+   "from": 4.5,
+   "to": 100
+  }
+ ]
+}

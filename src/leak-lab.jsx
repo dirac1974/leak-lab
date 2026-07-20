@@ -145,6 +145,28 @@ function vs4Chart(eff) {
 const VSJAM = { c: 4.5 };
 const MIX = 2.5, EV_PER_PCT = 0.12, EV_CAP = 6;
 
+/* ---- C9: the lineup is strategy input ----
+   Live strategy depends on WHO is in the pot, so the zone charts themselves
+   shift with the table: opener range width scales defends, the players behind
+   scale opens, and the responders' fold/call tendencies scale postflop value
+   and bluff regions. Every weight is anchored to the GTO Bot's parameters —
+   a table of GTO Bots reproduces the baseline chart exactly, and deviations
+   are proportional to how the real lineup differs. All shifts are bounded so
+   exploits tilt the chart, never replace it. */
+const clampF = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+function dynCtx(sc) {
+  const out = {};
+  if (sc.openerP) out.openerRfi = sc.openerP.rfi;
+  if (sc.behindAgg) out.behindAgg = sc.behindAgg;
+  const fld = sc.field && sc.field.length ? sc.field : sc.vil ? [sc.vil] : null;
+  if (fld) {
+    const n = fld.length;
+    out.vilBet = { f: fld.reduce((s, v) => s + v.p.vsBet.f, 0) / n, c: fld.reduce((s, v) => s + v.p.vsBet.c, 0) / n };
+    out.vilCbet = fld[0].p.cbet; // defense faces a single bettor
+  }
+  return out;
+}
+
 function zonesFor(stage, ctx) {
   if (stage === "rfi") {
     const bbv = ctx.bbv || 2;
@@ -154,7 +176,11 @@ function zonesFor(stage, ctx) {
     // Bigger opens tighten the profitable opening range — and iso-raises over
     // limpers are bigger by construction (+1bb per limper), so the same size
     // machinery produces the tighter iso range with no separate table.
-    const t = Math.max(2, baseT * rfiTighten(refOpenBB(bbv, ctx.hu) + nL));
+    // Lineup shift: callers behind widen value opens (they pay off); 3-bettors
+    // behind tax wide opens. Anchored to GTO-Bot tendencies.
+    const ba = ctx.behindAgg;
+    const lineupAdj = ba ? clampF(1 + 0.5 * (ba.c - PROF.gto.vsRaise.c) - 1.4 * (ba.r - PROF.gto.vsRaise.r), 0.85, 1.15) : 1;
+    const t = Math.max(2, baseT * rfiTighten(refOpenBB(bbv, ctx.hu) + nL) * lineupAdj);
     const limpFrom = t;
     // No limpers: a thin trap band. With limpers: a real overlimp band — pairs,
     // suited, connected hands that want a cheap multiway flop, not a bloated pot.
@@ -180,8 +206,11 @@ function zonesFor(stage, ctx) {
     // (speculative flats can't get paid), very deep feeds them.
     const eo = ctx.effOpp;
     const depthF = eo != null && eo < 40 ? 0.75 : eo != null && eo >= 250 ? 1.12 : 1;
-    const rT = d.r * tf * (nC ? 0.8 : 1);
-    const cT = Math.min(85, d.c * tf * (1 + 0.22 * nC) * depthF);
+    // Who opened matters as much as where: a Nit's 0.65× range is defended far
+    // tighter than a Maniac's 1.7×. Anchored so a GTO-width open = baseline.
+    const wf = ctx.openerRfi ? clampF(0.55 + 0.45 * ctx.openerRfi, 0.8, 1.3) : 1;
+    const rT = d.r * tf * (nC ? 0.8 : 1) * wf;
+    const cT = Math.min(85, d.c * tf * (1 + 0.22 * nC) * depthF * wf);
     return [
       { a: "raiseS", lbl: nC ? "SQUEEZE" : "3-BET", from: 0, to: rT },
       { a: "call", from: rT, to: cT },
@@ -202,6 +231,12 @@ function zonesFor(stage, ctx) {
     const mwV = (mw - 1) * 7;                       // value threshold tightens per extra opponent
     const mwBl = mw === 1 ? 1 : mw === 2 ? 0.45 : 0.2; // bluff band survival factor
     const mwC = 1 - 0.12 * (mw - 1);                // continue-vs-bet tightening
+    // Lineup weights (GTO-Bot-anchored, bounded): vs callers thin value widens
+    // and bluffs die; vs folders bluffs grow. Defense widens vs frequent bettors.
+    const vb = ctx.vilBet;
+    const vF = vb ? clampF(1 + (vb.c - PROF.gto.vsBet.c) * 0.35, 0.85, 1.25) : 1;   // value-width factor
+    const bfF = vb ? clampF(1 + (vb.f - PROF.gto.vsBet.f) * 2.5, 0.4, 1.5) : 1;     // bluff-band factor
+    const cbF = ctx.vilCbet != null ? clampF(1 + (ctx.vilCbet - PROF.gto.cbet) * 0.5, 0.88, 1.12) : 1; // vs-bettor-frequency factor
     const B = {
       ahi: { v: 44, mid: 66, bl: 90, r: 13, c: 60 },
       bwy: { v: 42, mid: 63, bl: 87, r: 13, c: 59 },
@@ -213,8 +248,8 @@ function zonesFor(stage, ctx) {
     if (stage === "cbet" || stage === "barrel") {
       const st = stage === "barrel" ? 5 : 0;
       const street = stage === "barrel" ? "turn" : "flop";
-      const v = Math.max(6, B.v - st + (ctx.ip ? 2 : -3) + sh - dp - mwV);
-      const bl = Math.max(B.mid, B.mid + (B.bl - st - (ctx.ip ? 0 : 5) - B.mid) * mwBl);
+      const v = Math.max(6, (B.v - st + (ctx.ip ? 2 : -3) + sh - dp - mwV) * vF);
+      const bl = Math.max(B.mid, B.mid + (B.bl - st - (ctx.ip ? 0 : 5) - B.mid) * mwBl * bfF);
       const polar = stage === "barrel" || ctx.tb === "wet" || ctx.tb === "mono";
       const L = (sz) => `BET ${pctLbl(SIZES[street][sz])}`;
       const val = polar
@@ -231,13 +266,13 @@ function zonesFor(stage, ctx) {
       // Multiway: raises go value-only and bluff-catches thin — MDF is a heads-up
       // concept; with players still in, someone else can have it.
       const r = Math.max(3, (B.r - st * 4 + sh * 0.5) * (1 + (baseF - frac) * 0.5) * (mw > 1 ? 0.8 : 1));
-      const c = Math.max(r + 8, Math.min(80, (B.c - st * 10 + sh * 0.8) * mdf * mwC));
+      const c = Math.max(r + 8, Math.min(80, (B.c - st * 10 + sh * 0.8) * mdf * mwC * cbF));
       return [{ a: "raise", from: 0, to: r }, { a: "call", from: r, to: c }, { a: "fold", from: c, to: 100 }];
     }
     if (stage === "riverBet") {
-      const v = Math.max(10, 36 + sh * 0.5 - dp - mwV);
+      const v = Math.max(10, (36 + sh * 0.5 - dp - mwV) * vF);
       const nut = Math.max(6, Math.min(13, v - 1));
-      const blTo = 78 + 12 * mwBl; // multiway river bluffs mostly disappear
+      const blTo = Math.min(92, 78 + 12 * mwBl * bfF); // river bluffs scale with who's folding
       return [
         { a: "bet", sz: "b", sizes: ["b", "s"], lbl: `BET ${pctLbl(SIZES.river.b)}`, from: 0, to: nut },
         { a: "bet", sz: "s", sizes: ["s"], lbl: `BET ${pctLbl(SIZES.river.s)}`, from: nut, to: v },
@@ -247,7 +282,7 @@ function zonesFor(stage, ctx) {
       ];
     }
     const frac = ctx.frac == null ? 0.75 : ctx.frac;
-    const c = Math.min(80, (47 + sh * 0.6) * ((1 / (1 + frac)) / (1 / 1.75)) * mwC);
+    const c = Math.min(80, (47 + sh * 0.6) * ((1 / (1 + frac)) / (1 / 1.75)) * mwC * cbF);
     return [{ a: "call", from: 0, to: c }, { a: "fold", from: c, to: 100 }];
   }
   return [{ a: "call", from: 0, to: VSJAM.c }, { a: "fold", from: VSJAM.c, to: 100 }];
@@ -747,7 +782,9 @@ function genScenario(cfg, filter, tries = 0) {
       for (const v of before) if (limpersIn.length < 3 && ORDER[v.pos] < ORDER[heroPos] && v.pos !== "SB" && v.pos !== "BB" && Math.random() < (LIMP_P[v.p.id] || 0.15)) { v.act = `limps ${D(chipBB(1, bbv))}`; limpersIn.push(v); }
     }
     const nL = limpersIn.length;
-    return { ...base, effBB: (S - 1), heroPos, limpers: nL, limpersIn, hand: dealBiased(foldBoundary("rfi", { hu, mode: cfg.mode, rfiT: RFIT[heroPos], heroPos, bbv, limpers: nL })), stage: "rfi", potBB: (1 + sb + nL), villains };
+    const liveBehind = after;
+    const behindAgg = liveBehind.length ? { r: liveBehind.reduce((s, v) => s + v.p.vsRaise.r, 0) / liveBehind.length, c: liveBehind.reduce((s, v) => s + v.p.vsRaise.c, 0) / liveBehind.length } : null;
+    return { ...base, effBB: (S - 1), heroPos, limpers: nL, limpersIn, behindAgg, hand: dealBiased(foldBoundary("rfi", { hu, mode: cfg.mode, rfiT: RFIT[heroPos], heroPos, bbv, limpers: nL, behindAgg })), stage: "rfi", potBB: (1 + sb + nL), villains };
   }
   return tries < 30 ? genScenario(cfg, filter, tries + 1) : { ...base, effBB: (S - 1), heroPos: POSN[nSeats - 3], rfiT: RFIT[POSN[nSeats - 3]], hand: dealBiased(foldBoundary("rfi", { hu, mode: cfg.mode, rfiT: RFIT[POSN[nSeats - 3]], heroPos: POSN[nSeats - 3], bbv })), stage: "rfi", potBB: (1 + sb), villains };
 }
@@ -783,7 +820,9 @@ function genHand(cfg, table) {
   if (heroPos === "BB") { // folded around to the BB — a walk, no decision
     return { ...base, heroPos, hand: deal(), stage: "walk", effBB: (S - 1), potBB: (1 + sb), villains };
   }
-  return { ...base, heroPos, hand: dealBiased(foldBoundary("rfi", { hu, mode: cfg.mode, rfiT: hu ? null : RFIT[heroPos], heroPos, bbv })), stage: "rfi", effBB: (S - heroBlind), potBB: (1 + sb), villains };
+  const behindFH = villains.filter((v) => ORDER[v.pos] > ORDER[heroPos]);
+  const behindAggFH = behindFH.length ? { r: behindFH.reduce((s, v) => s + v.p.vsRaise.r, 0) / behindFH.length, c: behindFH.reduce((s, v) => s + v.p.vsRaise.c, 0) / behindFH.length } : null;
+  return { ...base, heroPos, behindAgg: behindAggFH, hand: dealBiased(foldBoundary("rfi", { hu, mode: cfg.mode, rfiT: hu ? null : RFIT[heroPos], heroPos, bbv, behindAgg: behindAggFH })), stage: "rfi", effBB: (S - heroBlind), potBB: (1 + sb), villains };
 }
 
 /* Standalone postflop drills: c-bet spots, defending vs c-bets, river decisions */
@@ -2080,7 +2119,7 @@ export default function App() {
 
   const act = (a) => {
     const post = POST_STAGES.includes(sc.stage);
-    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
+    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
     const pct = post ? sc.cls.rank : sc.hand.pct;
     const g = AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
     const cont = continuation(sc, a, bbv);
@@ -2151,7 +2190,7 @@ export default function App() {
   const openTrend = useMemo(() => (openLeak ? leakTrend(leakRecs, openLeak) : null), [openLeak, leakRecs]);
   const isPost = sc ? POST_STAGES.includes(sc.stage) : false;
   const scPct = sc ? (isPost ? sc.cls.rank : sc.hand.pct) : 0;
-  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
+  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, ...dynCtx(sc), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
   const acts = sc
     ? (AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
       : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]
