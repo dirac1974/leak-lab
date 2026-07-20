@@ -2573,6 +2573,38 @@ export default function App() {
 
                   <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "22px 0 4px" }}>EV LOST PER DECISION · lower is better</div>
                   <LineChart series={[{ points: evSeries, color: T.brass }]} fmtY={(t) => t.toFixed(2)} />
+
+                  {(() => {
+                    // Biggest movers: scan every leak's trend, surface the most
+                    // improved and the most worsening with enough evidence.
+                    const moves = [];
+                    for (const k of Object.keys(LEAKS)) {
+                      const tr = leakTrend(leakRecs, k);
+                      if (!tr || tr.obs.length < 3 || tr.totE < 60 || tr.early <= 0) continue;
+                      moves.push({ k, rel: (tr.late - tr.early) / tr.early, tr });
+                    }
+                    if (!moves.length) return null;
+                    moves.sort((a, b) => a.rel - b.rel);
+                    const best = moves[0], worst = moves[moves.length - 1];
+                    const row = (m, good) => (
+                      <div key={m.k} className="ll-tap" onClick={() => { setLeakScope("all"); setOpenLeak(m.k); setView("leaks"); }}
+                        style={{ display: "flex", alignItems: "center", gap: 8, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 10, padding: "8px 12px", marginTop: 6 }}>
+                        <span style={{ fontFamily: MONO, fontSize: 13, color: good ? T.club : T.heart }}>{good ? "▼" : "▲"}</span>
+                        <span style={{ fontSize: 12.5, color: T.bone, flex: 1 }}>{LEAKS[m.k].label}</span>
+                        <span style={{ fontFamily: MONO, fontSize: 11.5, color: good ? T.club : T.heart }}>
+                          {good ? "" : "+"}{Math.round(m.rel * 100)}% · {(m.tr.early * 100).toFixed(1)}→{(m.tr.late * 100).toFixed(1)} bb/100
+                        </span>
+                      </div>
+                    );
+                    return (
+                      <>
+                        <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "22px 0 4px" }}>BIGGEST MOVERS · tap for the trend</div>
+                        {best.rel < -0.08 && row(best, true)}
+                        {worst.rel > 0.08 && row(worst, false)}
+                        {best.rel >= -0.08 && worst.rel <= 0.08 && <div style={{ fontFamily: MONO, fontSize: 11, color: T.dim, marginTop: 4 }}>No leak is moving much yet — trends firm up as sessions bank.</div>}
+                      </>
+                    );
+                  })()}
                 </>
               )}
 
