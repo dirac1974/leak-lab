@@ -184,7 +184,7 @@ function zonesFor(stage, ctx) {
     const limpFrom = t;
     // No limpers: a thin trap band. With limpers: a real overlimp band — pairs,
     // suited, connected hands that want a cheap multiway flop, not a bloated pot.
-    const limpTo = ctx.hu ? t : nL ? Math.min(96, t + Math.max(10, t * 0.6)) : Math.max(t, t + Math.min(6, t * 0.35));
+    const limpTo = ctx.hu ? t : (ctx.heroPos === "BB" && nL) ? 100 : nL ? Math.min(96, t + Math.max(10, t * 0.6)) : Math.max(t, t + Math.min(6, t * 0.35));
     const lo = usd(chipBB(arr[0] + nL, bbv) * bbv), hi = usd(chipBB(arr[arr.length - 1] + nL, bbv) * bbv);
     const word = nL ? "ISO" : "OPEN";
     const lbl = arr.length > 1 ? `${word} ${lo}–${hi}` : `${word} ${lo}`;
@@ -811,24 +811,39 @@ function genHand(cfg, table) {
   const openBB0 = OPEN(hu, bbv), openC0 = chipBB(openBB0, bbv);
   const D = (x) => usd(x * bbv);
   const villains = [];
-  for (let s = 0; s < N; s++) { if (s === table.heroSeat) continue; const p = PROF[table.seats[s]]; villains.push({ pos: posOf(s), p, seat: s, stk: vilStk(p, S, bbv) }); }
+  for (let s = 0; s < N; s++) {
+    if (s === table.heroSeat) continue;
+    const p = PROF[table.seats[s]];
+    // Persistent session stacks; a felted seat re-buys fresh.
+    const stk = table.stks && table.stks[s] != null && table.stks[s] >= 15 ? table.stks[s] : vilStk(p, S, bbv);
+    villains.push({ pos: posOf(s), p, seat: s, stk });
+  }
   const roster = [];
   for (let s = 0; s < N; s++) roster.push({ seat: s, pos: posOf(s), hero: s === table.heroSeat, profileId: s === table.heroSeat ? null : table.seats[s] });
   const before = villains.filter((v) => ORDER[v.pos] < ORDER[heroPos]).sort((a, b) => ORDER[a.pos] - ORDER[b.pos]);
-  const base = { hu, S, bbv, openBB: openBB0, mode: cfg.mode, rfiT: hu ? null : RFIT[heroPos], btn, heroSeat: table.heroSeat, table: true, roster };
+  const base = { hu, S, bbv, openBB: openBB0, mode: cfg.mode, rfiT: hu ? null : (RFIT[heroPos] != null ? RFIT[heroPos] : RFIT.SB * 0.9), btn, heroSeat: table.heroSeat, table: true, roster };
   let opener = null;
   for (const v of before) { const w = hu ? HU_OPEN : RFIT[v.pos]; if (opensHere(v.p, w)) { opener = v; break; } }
   villains.forEach((v) => { v.act = opener && v === opener ? `opens ${D(openC0)}` : ORDER[v.pos] < ORDER[heroPos] ? "folds" : undefined; });
   const heroBlind = blindC(heroPos, bbv) || 0;
   if (opener) {
-    return { ...base, heroPos, hand: dealBiased(foldBoundary("vsOpen", { openerPos: opener.pos, heroPos, hu, mode: cfg.mode, openBB: openBB0, bbv })), stage: "vsOpen", openerPos: opener.pos, openerP: opener.p, openerStk: opener.stk, effBB: effVs(S, opener.stk, openC0), effPre: Math.min(S, opener.stk || S), potBB: (1 + sb + openC0 - blindC(opener.pos, bbv)), villains };
+    // Cold-callers between the open and hero, exactly like drill mode.
+    const between = before.filter((v) => v !== opener && ORDER[v.pos] > ORDER[opener.pos]);
+    const coldCallers = [];
+    for (const v of between) if (coldCallers.length < 2 && Math.random() < Math.min(0.55, v.p.vsRaise.c * 0.55)) { v.act = `calls ${D(openC0)}`; coldCallers.push(v); }
+    return { ...base, heroPos, hand: dealBiased(foldBoundary("vsOpen", { openerPos: opener.pos, heroPos, hu, mode: cfg.mode, openBB: openBB0, bbv })), stage: "vsOpen", openerPos: opener.pos, openerP: opener.p, openerStk: opener.stk, coldCallers, effBB: effVs(S, opener.stk, openC0), effPre: Math.min(S, opener.stk || S), potBB: (1 + sb + openC0 * (1 + coldCallers.length) - blindC(opener.pos, bbv)), villains };
   }
-  if (heroPos === "BB") { // folded around to the BB — a walk, no decision
+  // Nobody raised: live tables limp. Non-blind seats before hero limp by type;
+  // if hero is the BB behind limpers, that's a check-your-option spot, not a walk.
+  const limpersFH = [];
+  for (const v of before) if (limpersFH.length < 3 && v.pos !== "SB" && v.pos !== "BB" && Math.random() < (LIMP_P[v.p.id] || 0.15)) { v.act = `limps ${D(chipBB(1, bbv))}`; limpersFH.push(v); }
+  const nLF = limpersFH.length;
+  if (heroPos === "BB" && !nLF) { // folded around to the BB — a walk, no decision
     return { ...base, heroPos, hand: deal(), stage: "walk", effBB: (S - 1), potBB: (1 + sb), villains };
   }
   const behindFH = villains.filter((v) => ORDER[v.pos] > ORDER[heroPos]);
   const behindAggFH = behindFH.length ? { r: behindFH.reduce((s, v) => s + v.p.vsRaise.r, 0) / behindFH.length, c: behindFH.reduce((s, v) => s + v.p.vsRaise.c, 0) / behindFH.length } : null;
-  return { ...base, heroPos, behindAgg: behindAggFH, hand: dealBiased(foldBoundary("rfi", { hu, mode: cfg.mode, rfiT: hu ? null : RFIT[heroPos], heroPos, bbv, behindAgg: behindAggFH })), stage: "rfi", effBB: (S - heroBlind), potBB: (1 + sb), villains };
+  return { ...base, heroPos, behindAgg: behindAggFH, limpers: nLF, limpersIn: limpersFH, hand: dealBiased(foldBoundary("rfi", { hu, mode: cfg.mode, rfiT: hu ? null : RFIT[heroPos], heroPos, bbv, limpers: nLF, behindAgg: behindAggFH })), stage: "rfi", effBB: (S - heroBlind), potBB: (1 + sb + nLF), villains };
 }
 
 /* Standalone postflop drills: c-bet spots, defending vs c-bets, river decisions */
@@ -1034,7 +1049,8 @@ function continuation(sc, action, bbv) {
           return { text: `${v.p.icon} ${v.pos} raises your limp to ${money(isoC)}.`, nextSc: { ...sc, stage: "vsOpen", openBB: isoC, openerPos: v.pos, openerP: v.p, villains: patched, effBB: effVs(sc.S, v.stk, isoC), openerStk: v.stk, effPre: Math.min(sc.S, v.stk || sc.S), potBB: (limpC + isoC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(v.pos, bv)) } };
         }
       }
-      const bb = sc.villains.find((x) => x.pos === "BB");
+      const bb = sc.villains.find((x) => x.pos === "BB") || (sc.limpersIn && sc.limpersIn[0]);
+      if (!bb) return { text: "Checked through.", result: 0 };
       const nOthers = (sc.limpersIn || []).length; // limpers ahead see the flop too
       const potLimp = ((2 + nOthers) * limpC + sbv - blindC(sc.heroPos, bv));
       const sc2 = postSeed({ ...sc, vil: bb, defMw: 1 + nOthers, openerPos: "BB", openerP: bb.p, ip: postIP(sc.heroPos, "BB"), effBB: effVs(sc.S, bb.stk, limpC), vFrac: 0.33, stage: "vsCbet", pre: "Limped pot — BB checks, you're in a family pot", villains: sc.villains.map((x) => (x.pos === "BB" ? { ...x, act: "checks" } : x.act && x.act.indexOf("limps") >= 0 ? x : x.act ? x : { ...x, act: "folds" })) }, "flop", potLimp);
@@ -1252,7 +1268,7 @@ function OptionCosts({ sc, zones, pct, chosen, bbv }) {
   const post = POST_STAGES.includes(sc.stage);
   const acts = AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
     : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]
-    : sc.stage === "rfi" ? ["fold", "limp", ...openIds(sc.bbv || 2, sc.hu)]
+    : sc.stage === "rfi" ? (sc.heroPos === "BB" && sc.limpers ? ["limp", ...openIds(sc.bbv || 2, sc.hu)] : ["fold", "limp", ...openIds(sc.bbv || 2, sc.hu)])
     : sc.stage === "vsOpen" ? ["fold", "call", "raiseS", "raiseB"]
     : ["fold", "call", "raise"];
   const gradeOf = (a) => AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB)
@@ -1398,7 +1414,7 @@ function actionLabel(stage, a, hu, sc, bbv) {
     return "Fold";
   }
   if (a === "fold") return "Fold";
-  if (a === "limp") return sc && sc.limpers ? `Overlimp ${usd(chipBB(1, bv) * bv)}` : `Call ${usd(chipBB(1, bv) * bv)}`;
+  if (a === "limp") { if (sc && sc.heroPos === "BB" && sc.limpers) return "Check"; return sc && sc.limpers ? `Overlimp ${usd(chipBB(1, bv) * bv)}` : `Call ${usd(chipBB(1, bv) * bv)}`; }
   if (a === "call") return stage === "vsJam" ? "Call all-in" : "Call";
   if (a && a.indexOf("raise") === 0) {
     if (stage === "rfi") { const nL = (sc && sc.limpers) || 0; return `${nL ? "Iso" : "Open"} ${usd(chipBB(openBBForId(a, bv, hu) + nL, bv) * bv)}`; }
@@ -1662,7 +1678,7 @@ function contextLine(sc) {
   if (sc.stage === "vsCbet" || sc.stage === "vsBarrel") return `${st} — ${sc.vil.p.name} fires ${pctLbl(betInfo(sc).frac)} pot at you.`;
   if (sc.stage === "riverCall") return `River — ${sc.vil.p.name} bets ${pctLbl(betInfo(sc).frac)} pot. Bluff-catch or let it go?`;
   if (sc.stage === "rfi") {
-    if (sc.limpers) return `${sc.limpers} limper${sc.limpers > 1 ? "s" : ""} to you in the ${sc.heroPos}. Iso, overlimp, or let it go?`;
+    if (sc.limpers) return sc.heroPos === "BB" ? `Your big blind — ${sc.limpers} limper${sc.limpers > 1 ? "s" : ""} in. Check your option or raise?` : `${sc.limpers} limper${sc.limpers > 1 ? "s" : ""} to you in the ${sc.heroPos}. Iso, overlimp, or let it go?`;
     return sc.hu ? "Small blind — first in. Your move." : sc.heroPos === "UTG" ? "First to act, under the gun." : `Folds to you in the ${sc.heroPos}.`;
   }
   if (sc.stage === "vsOpen") {
@@ -2139,11 +2155,16 @@ export default function App() {
   };
 
   // Build the persistent table for full-hand mode (hero at seat 0, lineup around).
+  // Stacks are assigned once and persist across hands — the table looks the same
+  // when you glance around next hand, like a real session.
   const buildTable = () => {
     const N = cfg.mode === "hu" ? 2 : POS_BY_OFFSET[cfg.mode].length;
-    const seats = [];
-    for (let s = 0; s < N; s++) seats[s] = s === 0 ? null : cfg.seats[(s - 1) % cfg.seats.length];
-    return { btn: (Math.random() * N) | 0, heroSeat: 0, seats };
+    const seats = [], stks = [];
+    for (let s = 0; s < N; s++) {
+      seats[s] = s === 0 ? null : cfg.seats[(s - 1) % cfg.seats.length];
+      stks[s] = s === 0 ? null : vilStk(PROF[seats[s]], STACK_OPTS[cfg.stack], STAKES[cfg.stake].bb);
+    }
+    return { btn: (Math.random() * N) | 0, heroSeat: 0, seats, stks };
   };
   // Deal the next full hand, skipping walks (folded to the BB), advancing the button.
   const dealHand = (tbl) => {
@@ -2243,7 +2264,7 @@ export default function App() {
   const acts = sc
     ? (AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
       : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]
-      : sc.stage === "rfi" ? ["fold", "limp", ...openIds(sc.bbv || 2, sc.hu)]
+      : sc.stage === "rfi" ? (sc.heroPos === "BB" && sc.limpers ? ["limp", ...openIds(sc.bbv || 2, sc.hu)] : ["fold", "limp", ...openIds(sc.bbv || 2, sc.hu)])
       : sc.stage === "vsOpen" ? ["fold", "call", "raiseS", "raiseB"]
       : ["fold", "call", "raise"])
     : [];
