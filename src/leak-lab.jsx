@@ -627,8 +627,14 @@ function leakKey(stage, best, chosen) {
 
 /* ---------------- Opponent profiles ---------------- */
 const PROFILES = [
-  { id: "gto", name: "GTO Bot", icon: "⚖️", desc: "Balanced, textbook frequencies", rfi: 1.0, cbet: 0.68, vsRaise: { f: 0.38, c: 0.47, r: 0.15 }, vs3: { f: 0.52, c: 0.36, r: 0.12 }, vsBet: { f: 0.4, c: 0.48, r: 0.12 },
+  /* Provenance: gto's response triples were online-calibrated; vsRaise.r 0.15
+     was an online 3-bet rate — live tables run ~4-7%, so the baseline bot now
+     3-bets 11% (still theory-correct-ish, no longer double the live room).
+     C9's lineup weights anchor to this profile, so it defines "neutral". */
+  { id: "gto", name: "GTO Bot", icon: "⚖️", desc: "Balanced, textbook frequencies", rfi: 1.0, cbet: 0.68, vsRaise: { f: 0.41, c: 0.48, r: 0.11 }, vs3: { f: 0.54, c: 0.36, r: 0.1 }, vsBet: { f: 0.4, c: 0.48, r: 0.12 },
     spot: "Rare in a live room. Treat a quiet, competent unknown this way until they show you otherwise — then re-type them." },
+  { id: "reg", name: "Live Reg", icon: "🧢", desc: "Solid live regular — honest lines, under-bluffs", rfi: 0.9, cbet: 0.6, vsRaise: { f: 0.52, c: 0.42, r: 0.06 }, vs3: { f: 0.6, c: 0.32, r: 0.08 }, vsBet: { f: 0.47, c: 0.43, r: 0.1 },
+    spot: "Knows the dealers by name, racks chips neatly, plays the same solid hands the same way every time. Their bluffs exist but are rare — big aggression means a big hand." },
   { id: "nit", name: "Nit", icon: "🪨", desc: "Ultra-tight — waits for premiums, folds a lot", rfi: 0.65, cbet: 0.55, vsRaise: { f: 0.58, c: 0.34, r: 0.08 }, vs3: { f: 0.7, c: 0.24, r: 0.06 }, vsBet: { f: 0.52, c: 0.4, r: 0.08 },
     spot: "Neat chip stacks, an hour of folding, never rebuys deep. When they finally raise it's the top of the deck — believe them and fold hands that look pretty." },
   { id: "tag", name: "TAG", icon: "🎯", desc: "Tight-aggressive reg — solid ranges, picks spots", rfi: 0.95, cbet: 0.66, vsRaise: { f: 0.45, c: 0.42, r: 0.13 }, vs3: { f: 0.55, c: 0.34, r: 0.11 }, vsBet: { f: 0.44, c: 0.45, r: 0.11 },
@@ -666,7 +672,7 @@ function opensHere(p, base) {
    train the games people actually sit in. Three structures below: limpers ahead
    of hero (iso spots), multiple callers of hero's open (multiway flops), and
    cold-callers between an open and hero (squeeze spots). */
-const LIMP_P = { station: 0.55, nit: 0.3, maniac: 0.15, lag: 0.18, tag: 0.12, gto: 0.08 }; // per-orbit limp-first tendency
+const LIMP_P = { station: 0.55, nit: 0.3, maniac: 0.15, lag: 0.18, tag: 0.12, reg: 0.18, gto: 0.08 }; // per-orbit limp-first tendency
 /* A limper facing an iso-raise is call-heavy: they liked their hand enough to
    play, and live limpers hate folding for one more bet. */
 function limperVsRaise(p) {
@@ -1511,6 +1517,13 @@ function adviceFor(sc, zones, bbv) {
    player type, and WHY it differs. GTO assumes a balanced opponent you can't
    read; exploit play attacks a known imbalance and is itself exploitable back. */
 const EXPLOIT = {
+  reg: {
+    behind: "A Live Reg behind plays honestly — they 3-bet ~6%, all value, so your opens are safe but their pressure is real. Steal normally; fold to their aggression without ego.",
+    opener: "Their open is close to the chart. The exploit is postflop: regs give up on turns too often and never bluff big rivers — float flops in position and take pots on later streets.",
+    aggressor: "A reg's 3-bet is value-heavy (queens-plus, AK, the odd suited ace). Continue with hands that dominate their value or fold — the GTO bluff-catching mix is wasted here.",
+    caller: "They fold flops honestly and chase draws at the right price. C-bet your normal range, but when a reg calls twice, stop bluffing — their river calls are real hands.",
+    bettor: "Big bets from a reg are what they look like. Call flop stabs with your pairs, but their turn and river barrels are value — fold your bluff-catchers and don't pay off.",
+  },
   nit: {
     behind: "Steal wider — a Nit in the blinds folds far too much, so opens that are breakeven vs GTO print pure profit. GTO defends the blinds near MDF; a Nit defends nowhere near it. But if they wake up with a 3-bet, believe it and fold.",
     opener: "3-bet-bluff more, and stop flat-calling to 'keep them in.' A Nit opens only premiums, so GTO's wide flatting range is dominated here — set-mine cheaply or 3-bet as a pure bluff, but don't stack off marginal value.",
@@ -1546,7 +1559,7 @@ function exploitFor(sc) {
   let P = null, role = null;
   if (sc.stage === "rfi") {
     const behind = sc.hu ? sc.villains : sc.villains.filter((v) => ORDER[v.pos] > ORDER[sc.heroPos]);
-    const rank = { maniac: 5, station: 4, nit: 4, lag: 3, tag: 1, gto: 0 };
+    const rank = { maniac: 5, station: 4, nit: 4, lag: 3, reg: 2, tag: 1, gto: 0 };
     let best = -1;
     for (const v of behind) { const s = rank[v.p.id] == null ? 0 : rank[v.p.id]; if (s > best) { best = s; P = v.p; } }
     role = "behind";
@@ -1590,7 +1603,7 @@ function mindsetFor(sc, image) {
   let P = null, role = null;
   if (sc.stage === "rfi") {
     const behind = sc.hu ? sc.villains : sc.villains.filter((v) => ORDER[v.pos] > ORDER[sc.heroPos]);
-    const rank = { lag: 5, maniac: 5, tag: 3, station: 2, nit: 2, gto: 1 };
+    const rank = { lag: 5, maniac: 5, tag: 3, reg: 3, station: 2, nit: 2, gto: 1 };
     let best = -1;
     for (const v of behind) { const s = rank[v.p.id] == null ? 0 : rank[v.p.id]; if (s > best) { best = s; P = v.p; } }
     role = "behind";
@@ -1599,7 +1612,7 @@ function mindsetFor(sc, image) {
   else if (AGG_STAGES.includes(sc.stage)) { P = sc.vil && sc.vil.p; role = "caller"; }
   else if (sc.stage === "vsCbet" || sc.stage === "vsBarrel" || sc.stage === "riverCall") { P = sc.vil && sc.vil.p; role = "bettor"; }
   if (!P) return null;
-  const thinking = P.id === "tag" || P.id === "lag" || P.id === "gto";
+  const thinking = P.id === "tag" || P.id === "lag" || P.id === "gto" || P.id === "reg";
   const respect = imgRespectHigh(image), wide = imgWide(image), unknown = image === "unknown";
   const read = unknown ? "they have no read on you yet" : respect ? "they see you as tight and honest" : wide ? "they see you as loose and capable of bluffing" : "they see you as straightforward";
 
@@ -2022,7 +2035,7 @@ function LeakChart({ tr, height = 168 }) {
 
 export default function App() {
   const [view, setView] = useState("setup");
-  const [cfg, setCfg] = useState({ mode: "9max", hu: "tag", seats: ["nit", "tag", "lag", "station", "maniac", "tag", "station", "nit"], stake: 0, stack: 2, image: "unknown", play: "drill" });
+  const [cfg, setCfg] = useState({ mode: "9max", hu: "tag", seats: ["nit", "reg", "lag", "station", "maniac", "tag", "station", "nit"], stake: 0, stack: 2, image: "unknown", play: "drill" });
   const [filter, setFilter] = useState("all");
   const [sess, setSess] = useState({ n: 0, good: 0, ev: 0, leaks: {}, byStage: {}, aggr: 0, pass: 0, foldn: 0, realized: 0, hands: 0 });
   const [sc, setSc] = useState(null);
