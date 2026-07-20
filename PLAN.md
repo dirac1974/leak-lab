@@ -30,13 +30,13 @@ Year-one mandatory total: **$124.**
 - [x] Decide React 19 vs 18 → **React 19** (package.json bumped to ^19.2.0; matches what production already ran)
 - [x] Decide deploy source → **GitHub Actions workflow** (Pages build_type=workflow; CI builds from src/, drift impossible; committed index.html is now a convenience artifact). Bonus: build pipeline made portable (`.build/` instead of `/tmp`).
 - [x] Commit the leak-tracking feature (2026-07-20, with C0 + C4 schema)
-- [ ] Bundle Barlow Condensed + IBM Plex Mono locally (removes the runtime Google Fonts fetch; makes offline true; store-privacy posture)
-- [ ] Migrate `store` (localStorage) to a hydration-at-boot pattern so the Capacitor native-storage swap in A2 is a drop-in
+- [x] Bundle fonts locally (2026-07-20: latin woff2 as data URIs via tools/fetch-fonts.js — zero runtime network requests)
+- [x] Migrate `store` to hydrate-at-boot with pluggable backend (2026-07-20) — the Capacitor swap is now backend-only. **A0 COMPLETE.**
 
 **Owner:** decisions = David; implementation = Claude sessions. **Cost: $0.**
 
 ### A1 — Validate with the live web app (~4 weeks, $0)
-- [ ] Add privacy-light telemetry (a Supabase `events` table on the existing free project — no analytics vendor): app_open, session_banked, return-visit day
+- [x] Telemetry live (2026-07-20): ll_events table, anon insert-only under RLS (reads denied, verified); app fires 'open'/'bank' with a random install id; README discloses. Metrics readable via Supabase dashboard/MCP.
 - [ ] Seed in 2–3 communities (r/poker, 2+2 live low-stakes, one poker Discord) as participation — spot-of-the-week posts using the app's own coach notes, link to the free web app
 - [ ] Watch for the qualitative signal: unprompted "can I pay for this?"
 
@@ -50,7 +50,7 @@ Year-one mandatory total: **$124.**
 - [ ] Native storage swap behind the hydrated `store`
 - [ ] RevenueCat: Free / Pro entitlements — Pro $6.99/mo, $49.99/yr, 14-day trial
 - [ ] Free/Pro split as specced (Pro = unlimited leak-trend history, all 6 profiles, full-hand mode, all stakes, sync, CSV export)
-- [ ] Supabase: add `leaks jsonb`, `opps jsonb` to `ll_sessions`; extend insert/fetch; account-deletion flow (Apple 5.1.1(v) requirement)
+- [x] Supabase leaks/opps columns migrated + insert/fetch wired (2026-07-20) — cloud now carries leak-trend history. Remaining from this line: account-deletion flow (A2).
 - [ ] Deep-link auth (custom scheme + `appUrlOpen` listener replacing the location.hash read)
 - [ ] TestFlight + Play internal beta — friends are beta testers here, not validators
 
@@ -75,13 +75,13 @@ All compute on the home machine (Core 7 150U, 10C/12T, 16GB — measured on this
 - All tooling lives in `tools/sim/` as plain Node scripts (`npm run sim:*`); generated tables land in `src/data/` and are committed — the app consumes them like it consumes `RANKED` today
 - Every table ships with an acceptance test before the app may consume it
 
-### B0 — The evaluator (build first; everything depends on it) — ~2–3 weeks of coding, minutes of compute
-- [ ] Exact 5-card ranker (7,462 equivalence classes, lookup-table based)
-- [ ] Omaha high: best of C(4,2)×C(5,3) = 60 evals/hand (C(5,2)×10 = 100 for Big O)
-- [ ] Low-8 evaluator (2-of-hole + 3-of-board, 8-or-better)
-- [ ] Correctness suite vs known hand rankings; cross-check a sample against an online Omaha calculator
-- [ ] Benchmark gate: ≥1M 5-card evals/sec/core in Node
-- [ ] Same module runs in a web worker in-app (for live coaching math) and in Node (for table generation)
+### B0 — The evaluator ✅ shipped 2026-07-20 (tools/sim/evaluator.js)
+- [x] Exact 5-card ranker — total-order category-packed scorer instead of the 7,462-class lookup (sims need correct ordering, not canonical classes; deviation noted in-file)
+- [x] Omaha high, exactly-2-of-hole, 4/5/6-card hole support
+- [x] Low-8 evaluator with counterfeit handling
+- [x] Correctness suite: category ladder, must-use-two edges, nut/counterfeit lows, 4,000-pair cross-check vs independent naive scorer (npm run sim:test)
+- [x] Benchmark: 4.66M rank5/sec, 87k omahaHigh/sec single core — 4.6× the gate; B2's full table projects to ~25 min multicore, not overnight
+- [ ] Same module in a web worker in-app (still open — wire when the first Omaha UI lands)
 
 *This is the one piece of Omaha work that ignores the A1 gate — it de-risks everything, costs nothing, and is useful standalone.*
 
@@ -122,18 +122,18 @@ Follows the July 2026 accuracy audit. Positioning decision: **market as a practi
 - [x] Bonus (serves "which style is he really"): per-profile **SPOT THEM LIVE** tells in the setup detail view — how to identify each archetype at a real table (Station's raise = the nuts; LAG vs Maniac = spot selection; etc.)
 
 ### C1 — Accuracy hardening (~1–2 sessions, $0)
-- [ ] Provenance comments on every table: which numbers are public-chart consensus vs authored live adjustment (audit found the live tightening half-explicit in `defTighten()`, half-invisible in base numbers)
-- [ ] Position-aware 3-bet defense: replace scalar `VS3B`/`VS4B` with opener-seat × 3-bettor-seat aware thresholds
-- [ ] Live-population pass on `PROFILES`: GTO Bot 3-bets 15% vs opens — live tables run 4–7%; recalibrate baseline + add a "Live Reg" default lineup
+- [x] Provenance comments on pressure charts + profiles (2026-07-20); remaining tables covered by snapshot tests
+- [x] Position + stack-aware 3-bet/4-bet defense (2026-07-20): vs3Chart/vs4Chart — IP vs blind 3-bettors, short jam-or-fold, deep flats
+- [x] Live-population pass (2026-07-20): GTO Bot 3-bet 15%→11% with provenance; NEW Live Reg 🧢 archetype (honest, under-bluffing) with tells + exploit playbook, seated in the default lineup
 - [ ] Pot-scale postflop EV pricing (flat 0.12bb/pct today regardless of pot; `gradeSized` already pot-scales sizing leaks — extend to distance leaks)
 - [ ] Words audit pass: every fixed claim in `adviceFor`/`exploitFor` traced to a param or math note in a comment (the injected-numbers architecture already keeps most of it honest)
-- [ ] Snapshot tests on all zone tables so future calibration changes are deliberate diffs, not drift
+- [x] Snapshot tests in CI (2026-07-20): npm test = 24 zone snapshots + partition invariants + GTO-anchoring proofs, wired into the Pages workflow — failing tests block deploys
 
-### C2 — Profile range viewer in setup (~1 session)
-- [ ] 13×13 grid per profile × position: cells colored open / limp-band / fold from `PCT` × `TABLES.rfi` × profile `rfi` multiplier (stake-aware via `rfiTighten`)
-- [ ] Position chips to flip through; lives inside the existing tap-profile detail panel next to `profDetail()` words
-- [ ] Label as "model range — top-X% by hand strength" (percentile-nested ranges approximate real charts; the grid also visually exposes any `handScore` ordering quirks worth hand-tuning)
-- [ ] Free-tier feature — it's a teaching hook and store-screenshot material
+### C2 — Profile range viewer in setup ✅ shipped 2026-07-20
+- [x] 13×13 grid per profile × position: cells colored open / limp-band / fold from `PCT` × `TABLES.rfi` × profile `rfi` multiplier (stake-aware via `rfiTighten`)
+- [x] Position chips to flip through; lives in the tap-profile detail panel
+- [x] Captioned as a model range (top-X% by strength, live-open sized)
+- [x] Free-tier feature — teaching hook + store-screenshot material
 
 ### C3 — Live range-narrowing view (~2–3 sessions)
 - [ ] "RANGE" button during training: villain's current range as a combo grid that narrows street by street
@@ -143,10 +143,10 @@ Follows the July 2026 accuracy audit. Positioning decision: **market as a practi
 
 ### C4 — Leak-history completion (~1 session; schema item ships with A0)
 - [x] **Shipped with A0 commit:** `oppSnapshot` extended to `{n, good}` per stage (readers accept legacy bare numbers via `oppCount()`); stage-accuracy trends now reconstructible from all future banked history
-- [ ] Progress view: "biggest mover" summary (top improving + top worsening leak from `leakTrend`) above the accuracy chart
+- [x] Progress view biggest-movers (2026-07-20): most-improved + most-worsening leak with evidence gates; taps through to the trend chart
 - [x] JSON backup + merge-restore in Progress (shipped 2026-07-20 after a real user data-eviction report; sessions dedupe on `(t, n)`, nothing clobbered). CSV export for Pro remains open.
 - [x] PWA installability shipped early for the same reason (manifest + network-first service worker + generated icons via `tools/make-icons.js`): installed home-screen apps are exempt from iOS Safari's 7-day storage eviction and run offline. This was the A2/PWA roadmap item — pulled forward.
-- [ ] Surface `store.set` quota failure instead of silent drop
+- [x] store.set failures surface a back-up-now warning (2026-07-20)
 - [ ] (Already scheduled in A2: cloud `leaks`/`opps` columns)
 
 ### C6 — Strategy visual redesign ✅ shipped 2026-07-20 (user feedback: strip too small, sizes indistinguishable)
@@ -161,14 +161,14 @@ Follows the July 2026 accuracy audit. Positioning decision: **market as a practi
 - [x] Squeeze spots: cold-callers between open and hero; call widens, 3-bet → value-lean squeeze sized `3-bet + open per caller`; continuation covers fold-out (dead-money win), opener-continues, sticky-caller-peels
 - [x] Defender multiway (`defMw`): family-pot bets tighten continues, raises value-only; after hero calls, rest step aside (documented simplification)
 - [x] Coach notes speak all three natively (iso rationale, overlimp rationale, squeeze math, "c-betting your whole range is a heads-up play, not a family-pot play")
-- [ ] Full-hand mode multiway (genHand pre-hero simulation still single-track) — follow-up
+- [x] Full-hand multiway (2026-07-20): limpers by type, cold-callers, and the BB check-your-option spot (no fold button; check-covers-all zones)
 
 ### C8 — Asymmetric stacks ✅ shipped 2026-07-20 (user feedback: varied stacks create the tricky live situations)
 - [x] Hero options extended to 300/500bb; per-villain profile-flavored stacks (`vilStk`), shown on chips/seats tinted short/deep, decremented street by street
 - [x] True effective stacks (`effVs`) at every confrontation; multiway depth governed by the deepest live opponent
 - [x] Priced-in short stacks (`respondToBetStk`): fold frequency collapses near all-in; call-all-in-for-less with `aiN` showdown riders
 - [x] Depth-aware zones: short opener tightens calls ×0.75, 250bb+ widens ×1.12, deep SPR dp cap 4→6; coach covers "priced in vs who you're really playing" asymmetry + deep-water one-pair warnings
-- [ ] Follow-ups: persistent roster stacks across full-hand-mode hands; true side-pot accounting (currently approximated via showdown-count riders)
+- [x] Persistent roster stacks across full-hand hands (2026-07-20; felted seats re-buy). Still open: true side-pot accounting (approximated via showdown-count riders)
 
 ### C5 — Player-read trainer (backlog, post-launch candidate)
 The direct product answer to "how do I determine which style this player really is": a drill that shows betting lines/showdowns and asks the user to name the archetype, plus per-seat observed-tendency notes in full-hand mode that converge on a suggested type (the villain-side mirror of `sessionImage()`). Strong candidate for the first major post-launch Pro feature — it *is* the marketing niche as a feature.
