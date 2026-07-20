@@ -1375,6 +1375,32 @@ function upsertProfile(name) {
   if (!list.includes(name)) { list.push(name); store.set("ll_profiles", list); }
   store.set("ll_current", name);
 }
+/* Backup & restore: browsers can evict localStorage (iOS Safari deletes it after
+   7 days away unless the app is installed to the home screen), so give users a
+   file they own. Restore merges — sessions dedupe on (t, n), never clobbering. */
+function buildBackup() {
+  const profiles = profilesList();
+  const data = { app: "leak-lab", v: 1, t: Date.now(), profiles, current: store.get("ll_current", null), hist: {} };
+  for (const p of profiles) data.hist[p] = loadHist(p);
+  return data;
+}
+function mergeHist(a, b) {
+  const seen = new Set(), out = [];
+  for (const r of [...(a || []), ...(b || [])].sort((x, y) => (x.t || 0) - (y.t || 0))) {
+    const k = `${r.t}:${r.n || 0}`;
+    if (!seen.has(k)) { seen.add(k); out.push(r); }
+  }
+  return out;
+}
+function applyBackup(d) {
+  if (!d || d.app !== "leak-lab" || !Array.isArray(d.profiles)) throw new Error("not a Leak Lab backup");
+  const merged = [...new Set([...profilesList(), ...d.profiles])];
+  store.set("ll_profiles", merged);
+  for (const p of d.profiles) store.set(histKey(p), mergeHist(loadHist(p), d.hist && d.hist[p]));
+  const cur = store.get("ll_current", null) || (d.current && merged.includes(d.current) ? d.current : null) || merged[0] || null;
+  if (cur) store.set("ll_current", cur);
+  return cur;
+}
 
 /* ---------------- Leak tracking over time ----------------
    Severity is EV lost per *opportunity* in the stage bucket where the leak can
@@ -1666,6 +1692,7 @@ export default function App() {
   const [peek, setPeek] = useState(null);
   const [openLeak, setOpenLeak] = useState(null);
   const [leakScope, setLeakScope] = useState("session");
+  const [bkMsg, setBkMsg] = useState("");
   const [cloud, setCloud] = useState(null); // { at, rt, email }
   const [cloudHist, setCloudHist] = useState(null); // cloud session records when signed in
   const [emailInput, setEmailInput] = useState("");
@@ -2147,6 +2174,40 @@ export default function App() {
               </div>
               <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.dim, marginTop: 8 }}>
                 {CLOUD_ON && cloud ? `Signed in — sessions sync to your account${profile ? ` (and to “${profile}” locally)` : ""}.` : profile ? `Sessions save to “${profile}” on this device when you reset or bank a session.` : "Playing as guest — pick or add a player above to track progress over time."}
+              </div>
+
+              <div style={{ display: "flex", gap: 14, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+                <span className="ll-tap" onClick={() => {
+                  try {
+                    const blob = new Blob([JSON.stringify(buildBackup())], { type: "application/json" });
+                    const a = document.createElement("a");
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `leak-lab-backup-${new Date().toISOString().slice(0, 10)}.json`;
+                    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+                    setBkMsg("Backup downloaded — keep it anywhere (Files, Drive, email to yourself).");
+                  } catch (e) { setBkMsg("Couldn't build the backup."); }
+                }} style={{ fontFamily: MONO, fontSize: 11, color: T.diamond, textDecoration: "underline" }}>⬇ back up my data</span>
+                <label className="ll-tap" style={{ fontFamily: MONO, fontSize: 11, color: T.diamond, textDecoration: "underline" }}>
+                  ⬆ restore a backup
+                  <input type="file" accept=".json,application/json" style={{ display: "none" }} onChange={(e) => {
+                    const f = e.target.files && e.target.files[0];
+                    e.target.value = "";
+                    if (!f) return;
+                    const r = new FileReader();
+                    r.onload = () => {
+                      try {
+                        const cur = applyBackup(JSON.parse(r.result));
+                        setProfile(cur); setHistory(loadHist(cur));
+                        setBkMsg("Backup restored — sessions merged, nothing overwritten.");
+                      } catch (err) { setBkMsg("That file isn't a Leak Lab backup."); }
+                    };
+                    r.readAsText(f);
+                  }} />
+                </label>
+              </div>
+              {bkMsg && <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.brass, marginTop: 6 }}>{bkMsg}</div>}
+              <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.dim, marginTop: 6 }}>
+                Browsers can clear website data (iPhone Safari deletes it after 7 days away). Two ways to make your progress permanent: add Leak Lab to your home screen — an installed app's data is protected — or back it up above. Signing in with email keeps sessions in the cloud too.
               </div>
 
               <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "22px 0 4px" }}>ACCURACY OVER SESSIONS</div>

@@ -12,10 +12,17 @@ const html = `<!DOCTYPE html>
 <meta property="og:description" content="Train against real player types, not a solver. Spot the Nit, the Station, the Maniac — and see every mistake priced in dollars at your stakes." />
 <meta property="og:type" content="website" />
 <title>Leak Lab — Live Poker Strategy Trainer</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" type="image/png" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-180.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Leak Lab" />
 <style>html,body{margin:0;padding:0;background:#101418}</style>
 </head>
 <body>
 <div id="root"></div>
+<script>if("serviceWorker" in navigator){addEventListener("load",function(){navigator.serviceWorker.register("./sw.js").catch(function(){})})}</script>
 <script>
 ${js}
 </script>

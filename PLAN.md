@@ -144,7 +144,8 @@ Follows the July 2026 accuracy audit. Positioning decision: **market as a practi
 ### C4 — Leak-history completion (~1 session; schema item ships with A0)
 - [x] **Shipped with A0 commit:** `oppSnapshot` extended to `{n, good}` per stage (readers accept legacy bare numbers via `oppCount()`); stage-accuracy trends now reconstructible from all future banked history
 - [ ] Progress view: "biggest mover" summary (top improving + top worsening leak from `leakTrend`) above the accuracy chart
-- [ ] JSON/CSV export (doubles as the pre-Capacitor storage-migration backup; export = Pro, backup = free)
+- [x] JSON backup + merge-restore in Progress (shipped 2026-07-20 after a real user data-eviction report; sessions dedupe on `(t, n)`, nothing clobbered). CSV export for Pro remains open.
+- [x] PWA installability shipped early for the same reason (manifest + network-first service worker + generated icons via `tools/make-icons.js`): installed home-screen apps are exempt from iOS Safari's 7-day storage eviction and run offline. This was the A2/PWA roadmap item — pulled forward.
 - [ ] Surface `store.set` quota failure instead of silent drop
 - [ ] (Already scheduled in A2: cloud `leaks`/`opps` columns)
 
