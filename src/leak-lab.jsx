@@ -1975,6 +1975,41 @@ function LineChart({ series, height = 150, yLabel, fmtY }) {
   );
 }
 
+/* C2: 13×13 opening-range grid for a profile × position. Derived live from the
+   same percentile model the grader uses (PCT × seat threshold × profile rfi
+   multiplier × stake sizing), so the grid IS the chart — there is no second
+   source of truth to drift. Percentile-nested ranges are a model simplification;
+   the caption says so. */
+function RangeGrid({ p, mode, bbv, pos }) {
+  const hu = mode === "hu";
+  const baseT = hu ? HU_OPEN : TABLES[mode].rfi[pos];
+  if (baseT == null) return null;
+  const t = Math.max(2, baseT * (p.rfi || 1) * rfiTighten(refOpenBB(bbv, hu)));
+  const R = "AKQJT98765432";
+  const cells = [];
+  for (let i = 0; i < 13; i++) {
+    for (let j = 0; j < 13; j++) {
+      const hi = Math.min(i, j), lo = Math.max(i, j);
+      const label = i === j ? R[i] + R[j] : R[hi] + R[lo] + (j > i ? "s" : "o");
+      const pct = PCT[label];
+      const open = pct != null && pct <= t;
+      cells.push(
+        <div key={label} style={{ width: "7.69%", aspectRatio: "1", display: "flex", alignItems: "center", justifyContent: "center",
+          fontFamily: MONO, fontSize: 7.5, color: open ? "#171309" : T.dim, background: open ? T.brass : T.panel,
+          border: `0.5px solid ${T.ink}`, opacity: open ? 1 : 0.55 }}>{label}</div>
+      );
+    }
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", borderRadius: 8, overflow: "hidden", border: `1px solid ${T.line}` }}>{cells}</div>
+      <div style={{ fontFamily: MONO, fontSize: 10, color: T.dim, marginTop: 5 }}>
+        {p.name} opens ~{Math.round(t)}% from the {hu ? "SB" : pos} · model range (top-{Math.round(t)}% by hand strength), sized for live opens
+      </div>
+    </div>
+  );
+}
+
 const dayMs = 86400000;
 function tLabel(t, span) {
   const d = new Date(t);
@@ -2041,6 +2076,7 @@ export default function App() {
   const [sc, setSc] = useState(null);
   const [fb, setFb] = useState(null);
   const [openProf, setOpenProf] = useState(null);
+  const [gridPos, setGridPos] = useState("CO");
   const [table, setTable] = useState(null);
   const [handEv, setHandEv] = useState(0);
   const [profile, setProfile] = useState(() => store.get("ll_current", null));
@@ -2755,6 +2791,17 @@ export default function App() {
                   <div style={{ padding: "2px 14px 12px", borderTop: `1px solid ${T.line}` }}>
                     <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10.5, letterSpacing: 2, color: T.brass, marginTop: 10 }}>SPOT THEM LIVE</div>
                     <div style={{ fontFamily: MONO, fontSize: 11, color: T.bone, lineHeight: 1.55, marginTop: 4 }}>{p.spot}</div>
+                    <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10.5, letterSpacing: 2, color: T.dim, marginTop: 10 }}>OPENING RANGE · flip through positions</div>
+                    {cfg.mode !== "hu" && (
+                      <div style={{ display: "flex", gap: 4, margin: "6px 0 8px", flexWrap: "wrap" }}>
+                        {TABLES[cfg.mode].pos.filter((ps) => ps !== "BB").map((ps) => (
+                          <span key={ps} className="ll-tap" onClick={() => setGridPos(ps)}
+                            style={{ fontFamily: MONO, fontSize: 10, padding: "4px 9px", borderRadius: 999,
+                              color: gridPos === ps ? "#171309" : T.dim, background: gridPos === ps ? T.brass : T.panel, border: `1px solid ${gridPos === ps ? T.brass : T.line}` }}>{ps}</span>
+                        ))}
+                      </div>
+                    )}
+                    <RangeGrid p={p} mode={cfg.mode} bbv={bbv} pos={cfg.mode === "hu" ? "SB" : (TABLES[cfg.mode].rfi[gridPos] != null ? gridPos : "CO")} />
                     <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10.5, letterSpacing: 2, color: T.dim, marginTop: 10 }}>ASSUMED RANGES</div>
                     {profDetail(p, cfg.mode).map((l, i) => (
                       <div key={i} style={{ fontFamily: MONO, fontSize: 11, color: T.bone, lineHeight: 1.55, marginTop: 8 }}>{l}</div>
