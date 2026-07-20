@@ -1,0 +1,17 @@
+{
+  "name": "leak-lab",
+  "version": "1.0.0",
+  "description": "Mobile-first No-Limit Hold'em GTO trainer — profile the table, drill the spots, price every leak.",
+  "license": "MIT",
+  "scripts": {
+    "build": "esbuild src/entry.jsx --bundle --minify --jsx=automatic --loader:.jsx=jsx --outfile=/tmp/leak-lab.bundle.js && node build.js",
+    "serve": "npx --yes http-server -p 8080 -c-1 ."
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.0"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
