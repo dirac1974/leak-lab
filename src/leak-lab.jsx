@@ -968,26 +968,97 @@ function PCard({ c, i, small }) {
 
 const ZC = { raise: T.brass, raiseS: T.brass, raiseM: "#D0952F", raiseB: "#C98A2E", call: T.diamond, limp: T.diamond, fold: T.foldc, bet: T.brass, check: "#5A6B60" };
 const ZN = { raise: "RAISE", raiseS: "OPEN", raiseM: "OPEN", raiseB: "OPEN", call: "CALL", limp: "LIMP", fold: "FOLD", bet: "BET", check: "CHECK" };
+/* Small and big sizings get their own tones so adjacent bet zones read as separate
+   regions (rivers are literally big/small/check/big/check — one brass blob hid that).
+   A zone where both sizes mix renders as a two-tone stripe, primary size dominant. */
+const SZ_SMALL = "#E0B152", SZ_BIG = "#AD7B1D";
+function zonePaint(z) {
+  if (z.a === "bet") {
+    const main = z.sz === "b" ? SZ_BIG : SZ_SMALL, alt = z.sz === "b" ? SZ_SMALL : SZ_BIG;
+    if (z.sizes && z.sizes.length > 1) return `repeating-linear-gradient(45deg, ${main} 0 7px, ${alt} 7px 10px)`;
+    return main;
+  }
+  return ZC[z.a];
+}
+const zoneName = (z) => z.lbl || ZN[z.a];
+
 function RangeStrip({ zones, pct, caption }) {
+  const inZone = zones.find((z) => pct >= z.from && pct < z.to) || zones[zones.length - 1];
+  // Legend: one chip per distinct action+size, sized by its share of all hands.
+  const groups = [];
+  for (const z of zones) {
+    const key = zoneName(z);
+    const g = groups.find((x) => x.key === key);
+    if (g) g.w += z.to - z.from; else groups.push({ key, w: z.to - z.from, paint: zonePaint(z) });
+  }
   return (
     <div style={{ margin: "18px 2px 6px" }}>
-      <div style={{ position: "relative", height: 16, borderRadius: 8, overflow: "hidden", display: "flex", border: `1px solid ${T.line}` }}>
+      <div style={{ position: "relative", height: 30, borderRadius: 9, overflow: "hidden", display: "flex", border: `1px solid ${T.line}` }}>
         {zones.map((z, i) => (
-          <div key={i} style={{ width: `${z.to - z.from}%`, background: ZC[z.a], display: "flex", alignItems: "center", justifyContent: "center" }}>
-            {z.to - z.from >= 14 && <span style={{ fontFamily: DISP, fontWeight: 700, fontSize: 8.5, letterSpacing: 1.2, color: "rgba(12,14,16,.75)", whiteSpace: "nowrap" }}>{z.lbl || ZN[z.a]}</span>}
+          <div key={i} style={{ width: `${z.to - z.from}%`, background: zonePaint(z), display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: i > 0 ? "inset 1px 0 0 rgba(12,14,16,.45)" : "none" }}>
+            {z.to - z.from >= 9 && <span style={{ fontFamily: DISP, fontWeight: 700, fontSize: 10, letterSpacing: 0.8, color: "rgba(12,14,16,.8)", whiteSpace: "nowrap" }}>{zoneName(z)}</span>}
           </div>
         ))}
-        <div style={{ position: "absolute", left: `${pct}%`, top: 0, bottom: 0, width: 2, background: T.bone, transform: "translateX(-1px)" }} />
+        <div style={{ position: "absolute", left: `${pct}%`, top: 0, bottom: 0, width: 2.5, background: T.bone, transform: "translateX(-1px)", boxShadow: "0 0 5px rgba(234,230,218,.8)" }} />
       </div>
       <div style={{ position: "relative", height: 15, marginTop: 3 }}>
-        <span style={{ position: "absolute", left: `${Math.min(88, Math.max(0, pct - 6))}%`, fontFamily: MONO, fontSize: 10, color: T.bone }}>
-          ▲ you · {Math.round(pct)}%
+        <span style={{ position: "absolute", left: `${Math.min(56, Math.max(0, pct - 6))}%`, fontFamily: MONO, fontSize: 10, color: T.bone }}>
+          ▲ you {Math.round(pct)}% · {zoneName(inZone)}
         </span>
         {zones.slice(1).map((z, i) => (
           <span key={i} style={{ position: "absolute", left: `${z.from}%`, transform: "translateX(-50%)", fontFamily: MONO, fontSize: 9, color: T.dim, top: pct > z.from - 9 && pct < z.from + 9 ? 12 : 0 }}>{Math.round(z.from)}</span>
         ))}
       </div>
-      <div style={{ fontFamily: MONO, fontSize: 10, color: T.dim, marginTop: 6 }}>{caption || "strongest 0% → 100% weakest · combo-weighted"}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", marginTop: 8 }}>
+        {groups.map((g) => (
+          <span key={g.key} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: MONO, fontSize: 9.5, color: T.dim }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: g.paint, flexShrink: 0 }} />{g.key} · {Math.round(g.w)}%
+          </span>
+        ))}
+      </div>
+      <div style={{ fontFamily: MONO, fontSize: 10, color: T.dim, marginTop: 5 }}>{caption || "strongest 0% → 100% weakest · combo-weighted"} · chip % = share of hands</div>
+    </div>
+  );
+}
+
+/* The strip shows the strategy across ALL hands; this shows the menu for THIS hand:
+   every option the action bar offered, graded exactly as act() grades, priced in
+   bb and dollars. Multiple rows can be "best" (preflop raise sizes are family-graded
+   — that itself is the lesson: any listed live size is standard). */
+function OptionCosts({ sc, zones, pct, chosen, bbv }) {
+  const post = POST_STAGES.includes(sc.stage);
+  const acts = AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
+    : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]
+    : sc.stage === "rfi" ? ["fold", "limp", ...openIds(sc.bbv || 2, sc.hu)]
+    : sc.stage === "vsOpen" ? ["fold", "call", "raiseS", "raiseB"]
+    : ["fold", "call", "raise"];
+  const gradeOf = (a) => AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB)
+    : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a)
+    : grade(zones, pct, a, post ? 6 : undefined);
+  const chipC = (a) => a === "fold" ? T.foldc : a === "check" ? ZC.check : a === "call" || a === "limp" ? T.diamond
+    : a === "betS" ? SZ_SMALL : a === "betB" ? SZ_BIG : T.brass;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10.5, letterSpacing: 2, color: T.dim, marginBottom: 2 }}>THIS HAND'S MENU · what each option costs</div>
+      {acts.map((a) => {
+        const g = gradeOf(a);
+        const you = a === chosen;
+        const best = g.verdict === "best";
+        return (
+          <div key={a} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 10, marginTop: 4,
+            background: you ? "rgba(217,164,65,.10)" : T.panel, border: `1px solid ${you ? T.brass : T.line}` }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: chipC(a), flexShrink: 0 }} />
+            <span style={{ fontFamily: DISP, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.6, color: T.bone, flex: 1, textTransform: "uppercase" }}>
+              {actionLabel(sc.stage, a, sc.hu, sc, bbv)}
+            </span>
+            {you && <span style={{ fontFamily: MONO, fontSize: 9, color: T.brass, flexShrink: 0 }}>YOUR PICK</span>}
+            <span style={{ fontFamily: MONO, fontSize: 11.5, flexShrink: 0, color: best ? T.club : g.verdict === "ok" ? T.diamond : T.heart }}>
+              {best ? "best ✓" : g.verdict === "ok" ? `${g.sized === "mix" ? "fine mix" : "fine"} · −${usd(g.ev * bbv)}` : `−${g.ev}bb · −${usd(g.ev * bbv)}`}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1953,21 +2024,7 @@ export default function App() {
                   </div>
                 ); })()}
                 <RangeStrip zones={fb.g.zones} pct={scPct} caption={isPost ? `nuts 0 → 100 air · you: ${sc.cls.label}` : undefined} />
-                {(isPost || sc.stage === "rfi" || sc.stage === "vsOpen") && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "10px 0 2px" }}>
-                    {acts.map((a) => {
-                      const g2 = AGG_STAGES.includes(sc.stage) ? gradeSized(zones, scPct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, scPct, a) : grade(zones, scPct, a, 6);
-                      const best = g2.ev === 0;
-                      return (
-                        <span key={a} style={{ fontFamily: MONO, fontSize: 10.5, padding: "5px 9px", borderRadius: 999,
-                          border: `1px solid ${a === fb.action ? T.brass : T.line}`, background: a === fb.action ? "rgba(217,164,65,.12)" : "transparent",
-                          color: best ? T.club : g2.ev <= 0.5 ? T.brass : T.heart }}>
-                          {actionLabel(sc.stage, a, sc.hu, sc, bbv)} {best ? "· GTO" : `· −${g2.ev}bb (−${usd(g2.ev * bbv)})`}
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
+                <OptionCosts sc={sc} zones={fb.g.zones} pct={scPct} chosen={fb.action} bbv={bbv} />
                 <div style={{ fontSize: 13, color: T.bone, margin: "10px 0 14px" }}>{fb.cont.text}</div>
                 {fb.terminal && fb.result != null && (
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "9px 11px", marginBottom: 12, borderRadius: 10, background: T.panel, border: `1px solid ${T.line}` }}>

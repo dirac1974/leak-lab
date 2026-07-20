@@ -149,6 +149,12 @@ Follows the July 2026 accuracy audit. Positioning decision: **market as a practi
 - [ ] Surface `store.set` quota failure instead of silent drop
 - [ ] (Already scheduled in A2: cloud `leaks`/`opps` columns)
 
+### C6 — Strategy visual redesign ✅ shipped 2026-07-20 (user feedback: strip too small, sizes indistinguishable)
+- [x] RangeStrip: 30px tall, distinct tones for small vs big sizings (adjacent river big/small zones used to render as one brass blob), two-tone stripe for mixed-size zones, labels from 9% width, glowing you-marker with zone name ("▲ you 62% · CHECK")
+- [x] Legend chips under the strip: color square → action → share of all hands (the color-matched-boxes idea, applied to range composition)
+- [x] OptionCosts menu in feedback: every action-bar option graded exactly as act() grades, priced in bb and $, chosen row highlighted — replaces the old pill row that skipped the 3-bet/4-bet/jam stages and still said "GTO" (C0 miss). Preflop raise sizes both show "best ✓", making family grading visible.
+- [x] Chose EV-priced menu over pie chart: the zone model prices options, it doesn't compute mixing frequencies — a pie would imply solver-frequency claims the engine can't back
+
 ### C5 — Player-read trainer (backlog, post-launch candidate)
 The direct product answer to "how do I determine which style this player really is": a drill that shows betting lines/showdowns and asks the user to name the archetype, plus per-seat observed-tendency notes in full-hand mode that converge on a suggested type (the villain-side mirror of `sessionImage()`). Strong candidate for the first major post-launch Pro feature — it *is* the marketing niche as a feature.
 
