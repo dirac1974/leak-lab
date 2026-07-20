@@ -117,8 +117,31 @@ function defendChart(openerPos, heroPos, hu, mode) {
   }[tier];
   return C[heroPos] || C.o;
 }
-const VS3B = { r: 4, c: 14 };
-const VS4B = { r: 2.2, c: 5.5 };
+/* Facing 3-bets/4-bets: thresholds are all-hands percentiles (hero holds a
+   top-of-range open, so "continue top 14%" ≈ defending ~70% of a 20% open).
+   Provenance: base values are public-consensus adjacent; the position and
+   stack shifts below are authored live adjustments.
+   - An in-position non-blind 3-bettor (BTN/CO over an early open) has the
+     widest range → defend wider. Blind 3-bets vs steals skew value live.
+   - Short effective (<35bb): continuing ≈ committing — call less, jam more.
+   - Deep (250bb+): flat more in position, 4-bet tighter (deep 4-bet pots are
+     aces-heavy in live games). */
+function vs3Chart(heroPos, aggPos, eff) {
+  let r = 4, c = 14;
+  const blind3 = aggPos === "SB" || aggPos === "BB";
+  const ip3 = aggPos && heroPos && ORDER[aggPos] > ORDER[heroPos] && !blind3;
+  if (ip3) { r = 4.5; c = 16.5; }
+  if (blind3) { r = 3.6; c = 12.5; }
+  if (eff != null && eff < 35) { c = Math.min(c, 9); r += 0.8; }
+  else if (eff != null && eff >= 250) { c *= 1.18; r *= 0.8; }
+  return { r, c };
+}
+function vs4Chart(eff) {
+  let r = 2.2, c = 5.5;
+  if (eff != null && eff < 35) { c = Math.min(c, 4); r += 0.4; }
+  else if (eff != null && eff >= 250) { c *= 1.1; r *= 0.75; }
+  return { r, c };
+}
 const VSJAM = { c: 4.5 };
 const MIX = 2.5, EV_PER_PCT = 0.12, EV_CAP = 6;
 
@@ -165,8 +188,8 @@ function zonesFor(stage, ctx) {
       { a: "fold", from: cT, to: 100 },
     ];
   }
-  if (stage === "vs3bet") return [{ a: "raise", from: 0, to: VS3B.r }, { a: "call", from: VS3B.r, to: VS3B.c }, { a: "fold", from: VS3B.c, to: 100 }];
-  if (stage === "vs4bet") return [{ a: "raise", from: 0, to: VS4B.r }, { a: "call", from: VS4B.r, to: VS4B.c }, { a: "fold", from: VS4B.c, to: 100 }];
+  if (stage === "vs3bet") { const d3 = vs3Chart(ctx.heroPos, ctx.aggPos, ctx.effAgg); return [{ a: "raise", from: 0, to: d3.r }, { a: "call", from: d3.r, to: d3.c }, { a: "fold", from: d3.c, to: 100 }]; }
+  if (stage === "vs4bet") { const d4 = vs4Chart(ctx.effAgg); return [{ a: "raise", from: 0, to: d4.r }, { a: "call", from: d4.r, to: d4.c }, { a: "fold", from: d4.c, to: 100 }]; }
   if (POST_STAGES.includes(stage)) {
     /* Solver-calibrated zone tables per flop archetype (aggregate-frequency informed), shifted by SPR.
        sh > 0 when shallow: value/stack-off widens, defends widen. dp: very deep tightens thin value.
@@ -1396,10 +1419,13 @@ function adviceFor(sc, zones, bbv) {
       : zone.a === "raise" ? `Top of the range — keep the pressure on with a 4-bet.`
       : zone.a === "call" ? `${sc.hand.label} continues vs the ${sc.stage === "vs3bet" ? "3-bet" : "4-bet"} — strong enough to see a flop, not enough to stack off.`
       : `Below the continue line — folding to the ${sc.stage === "vs3bet" ? "3-bet" : "4-bet"} loses the least.`;
+    const effA = sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : null;
+    const depthNote = effA != null && effA < 35 ? ` Only ${Math.round(effA)}bb effective — calling is basically committing, so it's jam-or-fold territory.`
+      : effA != null && effA >= 250 ? ` ${Math.round(effA)}bb deep — live 4-bet pots this deep are aces-heavy; flat more in position, and fold pretty hands that play dominated.` : "";
     const alt = (P.vs3.r >= 0.25 || P.vsRaise.r >= 0.25) ? `Consider: ${P.name} piles in light — continue wider and let them keep bluffing.`
       : P.id === "nit" ? `Consider: a Nit's raise is the top of the deck — folding pretty hands here is discipline, not weakness.`
       : `Consider: most players under-bluff big preflop raises — when unsure, fold.`;
-    return `${lead} ${alt}`;
+    return `${lead}${depthNote} ${alt}`;
   }
   const v = sc.vil.p;
   const mwA = sc.field && sc.field.length > 1 ? sc.field.length : 0;
@@ -2054,7 +2080,7 @@ export default function App() {
 
   const act = (a) => {
     const post = POST_STAGES.includes(sc.stage);
-    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
+    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
     const pct = post ? sc.cls.rank : sc.hand.pct;
     const g = AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
     const cont = continuation(sc, a, bbv);
@@ -2125,7 +2151,7 @@ export default function App() {
   const openTrend = useMemo(() => (openLeak ? leakTrend(leakRecs, openLeak) : null), [openLeak, leakRecs]);
   const isPost = sc ? POST_STAGES.includes(sc.stage) : false;
   const scPct = sc ? (isPost ? sc.cls.rank : sc.hand.pct) : 0;
-  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
+  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
   const acts = sc
     ? (AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
       : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]
