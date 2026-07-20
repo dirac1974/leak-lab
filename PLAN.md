@@ -155,6 +155,14 @@ Follows the July 2026 accuracy audit. Positioning decision: **market as a practi
 - [x] OptionCosts menu in feedback: every action-bar option graded exactly as act() grades, priced in bb and $, chosen row highlighted — replaces the old pill row that skipped the 3-bet/4-bet/jam stages and still said "GTO" (C0 miss). Preflop raise sizes both show "best ✓", making family grading visible.
 - [x] Chose EV-priced menu over pie chart: the zone model prices options, it doesn't compute mixing frequencies — a pie would imply solver-frequency claims the engine can't back
 
+### C7 — Live multiway pots ✅ shipped 2026-07-20 (user feedback: "our scenarios almost never have more than one caller")
+- [x] Limpers ahead of hero (~40% of ring open spots): iso-or-overlimp-or-fold, iso sized +1bb/limper — existing `rfiTighten()` machinery produces the tighter iso range automatically; limpers respond call-heavy (`limperVsRaise`)
+- [x] Multiway flops: `continuation()` walks the whole field collecting callers (up to 3); postflop zones take `ctx.mw` — value tightens ~7pts/opponent, bluff bands collapse (×0.45 two-way, ×0.2 three+), showdowns via `winPMw`; `mw=1` verified byte-identical to old behavior
+- [x] Squeeze spots: cold-callers between open and hero; call widens, 3-bet → value-lean squeeze sized `3-bet + open per caller`; continuation covers fold-out (dead-money win), opener-continues, sticky-caller-peels
+- [x] Defender multiway (`defMw`): family-pot bets tighten continues, raises value-only; after hero calls, rest step aside (documented simplification)
+- [x] Coach notes speak all three natively (iso rationale, overlimp rationale, squeeze math, "c-betting your whole range is a heads-up play, not a family-pot play")
+- [ ] Full-hand mode multiway (genHand pre-hero simulation still single-track) — follow-up
+
 ### C5 — Player-read trainer (backlog, post-launch candidate)
 The direct product answer to "how do I determine which style this player really is": a drill that shows betting lines/showdowns and asks the user to name the archetype, plus per-seat observed-tendency notes in full-hand mode that converge on a suggested type (the villain-side mirror of `sessionImage()`). Strong candidate for the first major post-launch Pro feature — it *is* the marketing niche as a feature.
 

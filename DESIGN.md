@@ -231,3 +231,14 @@ with `vᵢ` = bb lost, `eᵢ` = opportunities, `K` = Gaussian. Dividing weighted
 ### 10f. Scope and storage notes
 
 The Leaks view toggles between the live session and an all-time roll-up (`leakTotals()`). Records banked before v1.2 have no `opps` and are skipped by `leakObs()`, so old history degrades to "not tracked" rather than to wrong numbers. Cloud sync (`sbInsertSession`) does not yet carry `leaks`/`opps` — leak history is local until the `ll_sessions` table gains those columns, and `leakRecs` falls back to whichever source actually has tracked sessions.
+
+---
+
+## 11. Live multiway pots (v1.3)
+
+Low-stakes live poker is limped, over-called, multiway poker; heads-up-only scenarios don't train it. Three structures, all reusing the zone machinery with context shifts rather than new tables:
+
+- **Limpers ahead of hero** (`sc.limpers`, `sc.limpersIn`): passive profiles limp in front (per-profile `LIMP_P`); hero's rfi becomes iso-or-overlimp-or-fold. Iso sizing is the live standard (open + 1bb per limper), and the existing `rfiTighten()` size-tightening produces the tighter iso range with no separate chart. The old thin trap band becomes a real overlimp band. Limpers facing the iso respond call-heavy (`limperVsRaise`).
+- **Multiway flops** (`sc.field`): after hero opens/isos, `continuation()` walks the whole field collecting callers (a raise anywhere short-circuits to the 3-bet line). Postflop zones take `ctx.mw`: value thresholds tighten ~7 points per extra opponent, bluff bands collapse (×0.45 two-way, ×0.2 three-plus), river bluffs mostly vanish. Showdowns use `winPMw` (independent-draw power approximation). `mw = 1` reduces to exactly the old behavior.
+- **Squeeze spots** (`sc.coldCallers`): cold-callers appear between the open and hero; calling widens (price + implied odds), 3-bets become value-lean squeezes sized `3-bet + one open per caller` (`squeezeBB`). Continuation covers the fold-out (dead-money win), the opener continuing (callers release, dead money stays), and a sticky caller peeling.
+- **Defender-side multiway** (`sc.defMw`): facing a bet in a family pot tightens continues (×0.88 per extra player) and makes raises value-only; once hero calls, remaining players step aside and later streets run heads-up (documented simplification).
