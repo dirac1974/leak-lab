@@ -163,6 +163,13 @@ Follows the July 2026 accuracy audit. Positioning decision: **market as a practi
 - [x] Coach notes speak all three natively (iso rationale, overlimp rationale, squeeze math, "c-betting your whole range is a heads-up play, not a family-pot play")
 - [ ] Full-hand mode multiway (genHand pre-hero simulation still single-track) — follow-up
 
+### C8 — Asymmetric stacks ✅ shipped 2026-07-20 (user feedback: varied stacks create the tricky live situations)
+- [x] Hero options extended to 300/500bb; per-villain profile-flavored stacks (`vilStk`), shown on chips/seats tinted short/deep, decremented street by street
+- [x] True effective stacks (`effVs`) at every confrontation; multiway depth governed by the deepest live opponent
+- [x] Priced-in short stacks (`respondToBetStk`): fold frequency collapses near all-in; call-all-in-for-less with `aiN` showdown riders
+- [x] Depth-aware zones: short opener tightens calls ×0.75, 250bb+ widens ×1.12, deep SPR dp cap 4→6; coach covers "priced in vs who you're really playing" asymmetry + deep-water one-pair warnings
+- [ ] Follow-ups: persistent roster stacks across full-hand-mode hands; true side-pot accounting (currently approximated via showdown-count riders)
+
 ### C5 — Player-read trainer (backlog, post-launch candidate)
 The direct product answer to "how do I determine which style this player really is": a drill that shows betting lines/showdowns and asks the user to name the archetype, plus per-seat observed-tendency notes in full-hand mode that converge on a suggested type (the villain-side mirror of `sessionImage()`). Strong candidate for the first major post-launch Pro feature — it *is* the marketing niche as a feature.
 
