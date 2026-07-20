@@ -1,5 +1,4 @@
 node_modules/
-package-lock.json
 .build/
 tools/test/.build/
 *.log
@@ -7,3 +6,4 @@ tools/test/.build/
 .vscode/
 .idea/
 /tmp/
+_site/

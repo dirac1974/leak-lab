@@ -1,7 +1,8 @@
 # Builds index.html from source and deploys to GitHub Pages on every push to main.
-# To use: Settings → Pages → Source → "GitHub Actions".
-# (If you'd rather not build in CI, index.html is already committed — just use
-#  Settings → Pages → "Deploy from a branch" → main / root, and you can ignore this file.)
+# Source of truth is CI (Settings → Pages → Source → "GitHub Actions").
+# Actions are SHA-pinned (tag comments for readability) so a tag-hijack can't
+# swap the action out from under us; deps come from the committed lockfile via
+# `npm ci`; only the built site is uploaded, not the whole workspace.
 name: Deploy Leak Lab to Pages
 
 on:
@@ -22,16 +23,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
-      - run: npm install
+      - run: npm ci
       - run: npm test
       - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
+      # Publish only the runtime files — keep node_modules/, src/, tools/, .git/
+      # out of the served artifact.
+      - run: |
+          mkdir -p _site
+          cp index.html sw.js manifest.webmanifest icon-180.png icon-192.png icon-512.png _site/
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
-          path: .
+          path: _site
 
   deploy:
     needs: build
@@ -41,4 +47,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
