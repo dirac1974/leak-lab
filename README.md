@@ -9,7 +9,7 @@ Leak Lab is a mobile-first No-Limit Hold'em trainer for *real* games: learn to s
 
 Open it on your phone — it's a single self-contained page that runs entirely in the browser, works offline once loaded, and installs to your home screen as a real app (tap Share → Add to Home Screen).
 
-> No account required, no tracking. Progress saves on your device — and because browsers can clear website data (iPhone Safari deletes it after 7 days away), **install to your home screen** (an installed app's storage is protected), **back up to a file** from the Progress tab, or **sign in with email** to sync sessions to the cloud.
+> No account required. The only thing the app phones home is an anonymous usage count (an event name like "open" plus a random install id — no hands, no results, no device info). Progress saves on your device — and because browsers can clear website data (iPhone Safari deletes it after 7 days away), **install to your home screen** (an installed app's storage is protected), **back up to a file** from the Progress tab, or **sign in with email** to sync sessions to the cloud.
 
 ---
 

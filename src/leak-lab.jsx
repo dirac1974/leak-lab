@@ -1837,15 +1837,28 @@ async function sbRefresh(rt) {
   return j.access_token ? { at: j.access_token, rt: j.refresh_token || rt } : null;
 }
 async function sbFetchHistory(at) {
-  const r = await fetch(`${SB_URL}/rest/v1/ll_sessions?select=t,n,acc,ev,ev_per,realized,hands,mode,stake&order=t.asc`, { headers: sbHeaders(at) });
+  const r = await fetch(`${SB_URL}/rest/v1/ll_sessions?select=t,n,acc,ev,ev_per,realized,hands,mode,stake,leaks,opps&order=t.asc`, { headers: sbHeaders(at) });
   if (!r.ok) throw new Error("fetch failed");
   const rows = await r.json();
-  return rows.map((x) => ({ t: Date.parse(x.t), n: x.n, acc: x.acc, ev: +x.ev, evPer: +x.ev_per, realized: x.realized == null ? 0 : +x.realized, hands: x.hands || 0, mode: x.mode, stake: x.stake }));
+  return rows.map((x) => ({ t: Date.parse(x.t), n: x.n, acc: x.acc, ev: +x.ev, evPer: +x.ev_per, realized: x.realized == null ? 0 : +x.realized, hands: x.hands || 0, mode: x.mode, stake: x.stake,
+    leaks: x.leaks || undefined, opps: x.opps || undefined }));
 }
 async function sbInsertSession(at, rec, player) {
-  const body = { player: player || null, n: rec.n, acc: rec.acc, ev: rec.ev, ev_per: rec.evPer, realized: rec.realized, hands: rec.hands, mode: rec.mode, stake: rec.stake };
+  const body = { player: player || null, n: rec.n, acc: rec.acc, ev: rec.ev, ev_per: rec.evPer, realized: rec.realized, hands: rec.hands, mode: rec.mode, stake: rec.stake,
+    leaks: rec.leaks || null, opps: rec.opps || null };
   const r = await fetch(`${SB_URL}/rest/v1/ll_sessions`, { method: "POST", headers: { ...sbHeaders(at), Prefer: "return=minimal" }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error("save failed");
+}
+/* Anonymous usage ping: event name + a random install id. Nothing else — no
+   account linkage, no hands, no device info. Insert-only table (RLS denies
+   reads), so the embedded key can count usage but never retrieve it. */
+function sbTrack(ev) {
+  if (!CLOUD_ON) return;
+  try {
+    let sid = store.get("ll_sid", null);
+    if (!sid) { sid = Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12); store.set("ll_sid", sid); }
+    fetch(`${SB_URL}/rest/v1/ll_events`, { method: "POST", headers: { ...sbHeaders(), Prefer: "return=minimal" }, body: JSON.stringify({ ev, sid }) }).catch(() => {});
+  } catch (e) {}
 }
 
 /* Tiny dependency-free SVG line chart for the progress view. */
@@ -1966,6 +1979,7 @@ export default function App() {
 
   // Cloud bootstrap: capture magic-link tokens from the URL hash, restore saved
   // sessions, refresh expired tokens, and pull history.
+  useEffect(() => { sbTrack("open"); }, []);
   useEffect(() => {
     if (!CLOUD_ON) return;
     (async () => {
@@ -1999,6 +2013,7 @@ export default function App() {
     const acc = Math.round((sess.good / sess.n) * 100);
     const rec = { t: Date.now(), n: sess.n, acc, ev: +sess.ev.toFixed(1), evPer: +(sess.ev / sess.n).toFixed(3), realized: +sess.realized.toFixed(1), hands: sess.hands, mode: cfg.play, stake: STAKES[cfg.stake].label,
       leaks: leakSnapshot(sess), opps: oppSnapshot(sess) };
+    sbTrack("bank");
     if (profile) { const h = saveSessionRecord(profile, rec); setHistory(h); }
     if (CLOUD_ON && cloud) {
       sbInsertSession(cloud.at, rec, profile)
