@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { FONT_CSS } from "./fonts-gen.js";
 
 /* ============ LEAK LAB — practical live-strategy trainer ============
    Real players, real spots: drill vs opponent archetypes, not a solver.
@@ -1092,7 +1093,7 @@ const T = {
   brass: "#D9A441", diamond: "#4C9AE5", club: "#4CAF6E", heart: "#E5484D", foldc: "#39424C",
 };
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@500&display=swap');
+${FONT_CSS}
 @keyframes llDeal { from { opacity:0; transform: translateY(14px) scale(.96);} to { opacity:1; transform:none;} }
 @keyframes llRise { from { opacity:0; transform: translateY(10px);} to { opacity:1; transform:none;} }
 .ll-btn { transition: transform .08s ease, filter .12s ease; cursor:pointer; }
