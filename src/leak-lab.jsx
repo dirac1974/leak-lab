@@ -1604,11 +1604,28 @@ function contextLine(sc) {
 const LS = (() => {
   try { const k = "__ll_t"; window.localStorage.setItem(k, "1"); window.localStorage.removeItem(k); return window.localStorage; } catch (e) { return null; }
 })();
+/* Hydrate-at-boot store: all ll_* keys load into memory once, reads serve from
+   the cache, writes go cache-first then through a pluggable backend. This is
+   the Capacitor seam — swapping localStorage for native async storage later
+   means replacing `backend` only; every caller keeps the same sync API.
+   Quota/write failures set store.failed instead of dropping data silently. */
+const backend = {
+  keys() { const out = []; try { for (let i = 0; i < (LS ? LS.length : 0); i++) { const k = LS.key(i); if (k && k.indexOf("ll_") === 0) out.push(k); } } catch (e) {} return out; },
+  read(k) { try { return LS && LS.getItem(k); } catch (e) { return null; } },
+  write(k, raw) { try { if (LS) LS.setItem(k, raw); return true; } catch (e) { return false; } },
+};
 const store = {
   ok: !!LS,
-  get(k, fb) { try { const v = LS && LS.getItem(k); return v == null ? fb : JSON.parse(v); } catch (e) { return fb; } },
-  set(k, v) { try { LS && LS.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  failed: false,
+  cache: new Map(),
+  hydrate() { for (const k of backend.keys()) { const raw = backend.read(k); if (raw != null) { try { this.cache.set(k, JSON.parse(raw)); } catch (e) {} } } },
+  get(k, fb) { return this.cache.has(k) ? this.cache.get(k) : fb; },
+  set(k, v) {
+    this.cache.set(k, v);
+    if (!backend.write(k, JSON.stringify(v))) this.failed = true;
+  },
 };
+store.hydrate();
 const profilesList = () => store.get("ll_profiles", []);
 const histKey = (name) => "ll_hist_" + name;
 const loadHist = (name) => (name ? store.get(histKey(name), []) : []);
@@ -2392,6 +2409,7 @@ export default function App() {
               )}
               <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "6px 0 8px" }}>PLAYER</div>
               {!store.ok && <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.heart, marginBottom: 8 }}>This browser is blocking local storage — progress won't persist here.</div>}
+              {store.ok && store.failed && <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.heart, marginBottom: 8 }}>A save just failed (storage may be full) — back up your data below and free some space.</div>}
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
                 {plist.map((p) => (
                   <span key={p} className="ll-tap" onClick={() => switchProfile(p)}
