@@ -5,7 +5,7 @@ Leak Lab is a mobile-first No-Limit Hold'em trainer for *real* games: learn to s
 
 ### ▶️ Live app
 
-**https://dirac1974.github.io/leak-lab/**
+Served from its own domain (see `DEPLOY.md`).
 
 Open it on your phone — it's a single self-contained page that runs entirely in the browser, works offline once loaded, and installs to your home screen as a real app (tap Share → Add to Home Screen).
 
@@ -70,19 +70,9 @@ There's no framework and no dev server dependency — the build is a single `esb
 
 ---
 
-## Deploy your own copy
+## Deploy
 
-`index.html` is already built and committed, so **GitHub Pages needs no build step.**
-
-**Option A — deploy from branch (simplest):**
-1. Push this repo to GitHub.
-2. Go to **Settings → Pages**.
-3. Under **Source**, choose **Deploy from a branch**, branch **`main`**, folder **`/ (root)`**, then **Save**.
-4. Wait ~1 minute. Your app is live at `https://<your-username>.github.io/leak-lab/`.
-
-**Option B — GitHub Actions (auto-rebuilds on every push):**
-1. Under **Settings → Pages → Source**, choose **GitHub Actions**.
-2. The included `.github/workflows/pages.yml` builds from source and deploys automatically on every push to `main`.
+`npm run build` produces a clean `_site/` folder (the only files that should be served) plus `_site/_headers` (real HTTP security headers). Hosting is on Cloudflare Pages from a private repo — see **[DEPLOY.md](DEPLOY.md)** for the full runbook. Build command `npm ci && npm test && npm run build`, output directory `_site`.
 
 ---
 

@@ -29,12 +29,7 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: npm test
-      - run: npm run build
-      # Publish only the runtime files — keep node_modules/, src/, tools/, .git/
-      # out of the served artifact.
-      - run: |
-          mkdir -p _site
-          cp index.html sw.js manifest.webmanifest icon-180.png icon-192.png icon-512.png _site/
+      - run: npm run build # writes the clean _site/ deploy folder (only runtime files)
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: _site
