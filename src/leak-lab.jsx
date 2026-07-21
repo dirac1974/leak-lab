@@ -1579,16 +1579,21 @@ function adviceFor(sc, zones, bbv) {
     const arr = opensBB(bbv2, sc.hu);
     const refBB = refOpenBB(bbv2, sc.hu);
     const baseT = sc.hu ? HU_OPEN : sc.rfiT;
-    const t = Math.max(2, baseT * rfiTighten(refBB));
+    // Read the ACTUAL raise boundary from the same zones the grader uses, not a
+    // recomputed threshold — the recompute dropped the lineup/limper adjustments
+    // and pushed raise-zone hands into the fold sentence (coach-note/grader bug).
+    const raiseZ = zones.find((z) => typeof z.a === "string" && z.a.indexOf("raise") === 0);
+    const t = raiseZ ? raiseZ.to : Math.max(2, baseT * rfiTighten(refBB));
     const limpZ = zones.find((z) => z.a === "limp");
-    const inLimp = limpZ && pct >= limpZ.from && pct < limpZ.to;
+    const inLimp = limpZ && pct >= limpZ.from && pct < limpZ.to && (limpZ.to - limpZ.from) > 0.5;
+    const isRaise = typeof zone.a === "string" && zone.a.indexOf("raise") === 0;
     const lo = usd(chipBB(arr[0], bbv2) * bbv2), hi = usd(chipBB(arr[arr.length - 1], bbv2) * bbv2);
     const menu = arr.length > 1 ? `${lo}–${hi}` : lo;
     const nL = sc.limpers || 0;
     const sizeNote = nL
       ? `${nL} limper${nL > 1 ? "s" : ""} in the pot: iso to ${menu} — the base open plus a big blind per limper. Sizing up matters because limpers call the first raise with almost anything; you're raising for value and to get the button, not to fold the field out.`
       : `Live opens run ${menu} here (~${refBB.toFixed(1)}bb) — roughly ${Math.round((1 - rfiTighten(refBB)) * 100)}% tighter opening range than an online 2.3bb open, and a lower-SPR pot, so you commit faster postflop. Any of the listed sizes is standard; pick one and don't size-tell.`;
-    const lead = pct <= t - MIX ? (nL ? `${sc.hand.label} iso-raises over the limper${nL > 1 ? "s" : ""} — it beats what they limp with, so charge them.` : `${sc.hand.label} is inside the top ${Math.round(t)}% ${sc.heroPos} range — a standard open.`)
+    const lead = isRaise ? (nL ? `${sc.hand.label} iso-raises over the limper${nL > 1 ? "s" : ""} — it beats what they limp with, so charge them.` : `${sc.hand.label} is inside the top ${Math.round(t)}% ${sc.heroPos} range — a standard open.`)
       : inLimp ? (nL ? `${sc.hand.label} overlimps — it wants a cheap multiway flop (pairs, suited, connected hands cash in when they hit), not a bloated pot with a hand that flops mediocre.` : `${sc.hand.label} sits just past the raising range — a thin limp/trap band, and multiway-prone live. Raise-or-fold is usually cleaner.`)
       : `${sc.hand.label} is outside the top ${Math.round(t)}% from ${sc.heroPos} — fold. ${nL ? "Iso-raising junk into people who never fold for one raise is lighting money on fire." : "Because live opens are big, the profitable opening range is tighter than online; loose opens out of position bleed chips."}`;
     const behind = sc.hu ? sc.villains : sc.villains.filter((v) => ORDER[v.pos] > ORDER[sc.heroPos]);

@@ -14,7 +14,7 @@ fs.copyFileSync(path.join(root, "src", "leak-lab.jsx"), path.join(tmp, "src.jsx"
 fs.copyFileSync(path.join(root, "src", "fonts-gen.js"), path.join(tmp, "fonts-gen.js"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
-  "\nexport { zonesFor, grade, gradeSized, gradeRaise, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES };\n");
+  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP };\n");
 esbuild.buildSync({
   entryPoints: [path.join(tmp, "probe.jsx")], bundle: true, format: "cjs",
   jsx: "automatic", loader: { ".jsx": "jsx" }, external: ["react", "react/jsx-runtime"],
@@ -111,6 +111,68 @@ ok("QQ snap-calls a maniac shove at any depth", jamAt(MAN, 200, pct.QQ) === "cal
 const jc = (jr, eff) => M.zonesFor("vsJam", { jamRep: jr, effAgg: eff }).find((z) => z.a === "call").to;
 ok("tighter jammer -> tighter calls", jc(M.PROF.nit.jamRep, 100) < jc(M.PROF.tag.jamRep, 100) && jc(M.PROF.tag.jamRep, 100) < jc(MAN, 100));
 ok("shorter stack -> wider calls (priced in)", jc(NIT, 30) > jc(NIT, 100) && jc(NIT, 100) > jc(NIT, 200));
+
+/* ---- 4. Metamorphic / directional invariants (Fable audit, Phase 0) ----
+   These catch the motivating bug class: a swap to a tighter/looser villain, or a
+   change in a ctx param, must move the boundary the right way. A function that
+   ignores a parameter (the original flat-vsJam bug) fails a STRICT swap. */
+const PID = ["nit", "station", "reg", "tag", "gto", "lag", "maniac"];
+// M2 — strict: a strictly tighter jammer strictly tightens the stack-off boundary.
+for (const e of [25, 60, 100, 200]) {
+  const seq = ["nit", "tag", "gto", "lag", "maniac"].map((id) => M.zonesFor("vsJam", { jamRep: M.PROF[id].jamRep, effAgg: e })[0].to);
+  ok(`M2 vsJam boundary strictly widens by jammer @${e}bb`, seq.every((v, i) => i === 0 || v > seq[i - 1]), seq.map((x) => x.toFixed(1)).join(" < "));
+}
+// M3 — weak: vsJam call boundary never tightens as stacks shorten.
+{ let last = null, bad = 0; for (let e = 10; e <= 400; e += 5) { const v = M.zonesFor("vsJam", { jamRep: 4.5, effAgg: e })[0].to; if (last != null && v > last + 1e-9) bad++; last = v; } ok("M3 vsJam boundary non-increasing in eff", bad === 0, `${bad} inversions`); }
+// M4 — vs4bet continue >= vsJam continue (a sized 4-bet lets you see a flop).
+for (const e of [40, 100, 200]) for (const id of ["nit", "gto", "maniac"]) {
+  const c4 = M.zonesFor("vs4bet", { jamRep: M.PROF[id].jamRep, effAgg: e })[1].to;
+  const cj = M.zonesFor("vsJam", { jamRep: M.PROF[id].jamRep, effAgg: e })[0].to;
+  ok(`M4 vs4bet continue >= vsJam ${id}@${e}`, c4 >= cj - 1e-9, `${c4.toFixed(1)} vs ${cj.toFixed(1)}`);
+}
+// M1 — vsOpen: a tighter opener (lower rfi) is defended no wider.
+{ const wide = M.zonesFor("vsOpen", { openerPos: "CO", heroPos: "BTN", mode: "9max", openBB: 5, openerRfi: 1.7 })[1].to;
+  const tight = M.zonesFor("vsOpen", { openerPos: "CO", heroPos: "BTN", mode: "9max", openBB: 5, openerRfi: 0.65 })[1].to;
+  ok("M1 tighter opener defended no wider", tight <= wide + 1e-9, `${tight.toFixed(1)} <= ${wide.toFixed(1)}`); }
+// M5 — vsOpen: more cold-callers widens the call band.
+ok("M5 callers widen the call band", M.zonesFor("vsOpen", { openerPos: "CO", heroPos: "BTN", mode: "9max", openBB: 5, callers: 2 })[1].to > M.zonesFor("vsOpen", { openerPos: "CO", heroPos: "BTN", mode: "9max", openBB: 5 })[1].to);
+// M9 — static-data orderings that must always hold.
+const rfiRow = M.TABLES["9max"].rfi;
+ok("M9 rfi widens toward BTN", rfiRow.UTG < rfiRow.CO && rfiRow.CO < rfiRow.BTN);
+ok("M9 profile rfi ordering", ["nit","reg","tag","gto","station","lag","maniac"].map((id) => M.PROF[id].rfi).every((v, i, a) => i === 0 || v >= a[i - 1]));
+ok("M9 profile jamRep ordering", ["nit","station","reg","tag","gto","lag","maniac"].map((id) => M.PROF[id].jamRep).every((v, i, a) => i === 0 || v > a[i - 1]));
+ok("M9 response triples sum ~1", M.PROFILES.every((p) => [p.vsRaise, p.vs3, p.vsBet].every((t) => Math.abs(t.f + t.c + t.r - 1) < 0.03)));
+
+/* ---- 5. Coach-note vs grader consistency (Fable audit Layer 3) ----
+   The advice TEXT must not name a different action family than grade() returns.
+   This is the check that catches the rfi fold-band contradiction (Finding 1). */
+const LEX = [
+  [/is inside the top|iso-raises over|— 3-bet\.|keep the pressure on with a 4-bet|call it off|jam over the top|Top of the range|Top \d+% vs this open/, "aggr"],
+  [/overlimps —|sits just past the raising range|wants a cheap multiway flop/, "limp"],
+  [/is a call at this price|That's a call|continues vs the 3-bet|the price is right|see a flop/, "call"],
+  [/is outside the top|let it go|That's a fold|folding to the 3-bet|Below the .* defense line|not enough equity to stack off|loses the least/i, "fold"],
+];
+const famOf = (a) => (typeof a === "string" && (a.indexOf("raise") === 0 || a === "bet")) ? "aggr" : a;
+const ADVICE_CTX = [
+  ["rfi CO", "rfi", { rfiT: M.TABLES["9max"].rfi.CO, bbv: 2, mode: "9max", heroPos: "CO", hu: false, villains: [] }],
+  ["rfi UTG", "rfi", { rfiT: M.TABLES["9max"].rfi.UTG, bbv: 2, mode: "9max", heroPos: "UTG", hu: false, villains: [] }],
+  ["rfi CO station-behind", "rfi", { rfiT: M.TABLES["9max"].rfi.CO, bbv: 2, mode: "9max", heroPos: "CO", hu: false, behindAgg: { r: 0.06, c: 0.8 }, villains: [] }],
+];
+let advChecked = 0;
+for (const [name, stage, ctx] of ADVICE_CTX) {
+  const zones = M.zonesFor(stage, ctx);
+  for (const h of M.RANKED) {
+    const sc = { ...ctx, stage, hand: { label: h.label, pct: h.pct }, villains: ctx.villains || [] };
+    let txt; try { txt = M.adviceFor(sc, zones, 2); } catch (e) { continue; }
+    const hit = LEX.find(([re]) => re.test(txt));
+    if (!hit) continue;
+    const z = zones.find((zz) => h.pct >= zz.from && h.pct < zz.to) || zones[zones.length - 1];
+    const zFam = z.a === "limp" ? "limp" : famOf(z.a);
+    advChecked++;
+    if (hit[1] !== zFam) { ok(`advice/chart agree: ${name} ${h.label}`, false, `text says "${hit[1]}", chart says "${zFam}" @pct ${h.pct.toFixed(1)}`); }
+  }
+}
+ok(`coach-note consistency scanned ${advChecked} advice strings`, advChecked > 200);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
