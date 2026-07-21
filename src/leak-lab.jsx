@@ -1378,8 +1378,13 @@ function TableView({ sc, onPeek }) {
     btn = Math.max(0, posArr.indexOf(sc.hu ? "SB" : "BTN"));
     roster = posArr.map((pos, i) => ({ seat: i, pos, hero: i === heroSeat, profileId: null }));
   }
-  const W = 320, H = 188, cx = W / 2, cy = H / 2, rx = W / 2 - 36, ry = H / 2 - 30;
+  const W = 320, H = 212, cx = W / 2, cy = H / 2, rx = W / 2 - 34, ry = H / 2 - 34;
   const seatXY = (i) => { const ang = Math.PI / 2 + (2 * Math.PI * i) / N; return [cx + rx * Math.cos(ang), cy + ry * Math.sin(ang)]; };
+  // Dealer button rides an inner ring in front of the seats — one persistent
+  // element that glides to the next seat each hand (see CSS transition), so the
+  // button visibly moves relative to you instead of teleporting.
+  const btnXY = (i) => { const ang = Math.PI / 2 + (2 * Math.PI * i) / N; return [cx + rx * 0.58 * Math.cos(ang), cy + ry * 0.58 * Math.sin(ang)]; };
+  const [dbx, dby] = btnXY(((btn % N) + N) % N);
   // Live status by seat: the active villain(s) still in the hand vs folded.
   const bySeat = (v) => (v.seat != null ? v.seat : roster.findIndex((r) => r.pos === v.pos));
   const active = {}; (sc.villains || []).forEach((v) => { const s = bySeat(v); if (s >= 0) active[s] = v; });
@@ -1396,23 +1401,26 @@ function TableView({ sc, onPeek }) {
         const folded = !isHero && ((v && v.act === "folds") || (!v && post));
         const stillIn = isHero || (v && v.act !== "folds");
         const prof = seat.profileId ? PROFILES.find((p) => p.id === seat.profileId) : (v && v.p) || null;
+        // The seat the hero is currently deciding against reads brightest.
+        const isAgg = !isHero && v && v.act && v.act !== "folds" && (sc.vil ? bySeat(sc.vil) === seat.seat : true);
         return (
-          <div key={seat.seat} style={{ position: "absolute", left: x, top: y, transform: "translate(-50%,-50%)", textAlign: "center", width: 56 }}>
+          <div key={seat.seat} style={{ position: "absolute", left: x, top: y, transform: "translate(-50%,-50%)", textAlign: "center", width: 66, zIndex: isAgg ? 2 : 1 }}>
             <div className={isHero ? "" : "ll-tap"} onClick={isHero || !prof ? undefined : () => onPeek && onPeek({ name: prof.name, icon: prof.icon, desc: prof.desc })}
-              style={{ fontFamily: DISP, fontWeight: 700, fontSize: 15, lineHeight: 1, padding: "5px 3px", borderRadius: 9, opacity: folded ? 0.32 : 1,
+              style={{ fontFamily: DISP, fontWeight: 700, fontSize: 16, lineHeight: 1, padding: "5px 3px", borderRadius: 9, opacity: folded ? 0.34 : 1,
                 background: isHero ? T.brass : stillIn ? "rgba(217,164,65,.16)" : T.panel,
-                color: isHero ? "#171309" : T.bone, border: `1px solid ${isHero ? T.brass : stillIn ? T.brass : T.line}` }}>
-              {isHero ? "YOU" : <span style={{ fontSize: 15 }}>{(prof && prof.icon) || "·"}</span>}
-              <div style={{ fontFamily: MONO, fontSize: 8.5, letterSpacing: 0.5, marginTop: 1, color: isHero ? "#171309" : T.dim }}>{seat.pos}</div>
-              {!isHero && v && v.stk != null && !folded && <div style={{ fontFamily: MONO, fontSize: 8, marginTop: 1, color: v.stk < 45 ? T.heart : v.stk >= 200 ? T.club : T.dim }}>{Math.round(v.stk)}bb</div>}
+                color: isHero ? "#171309" : T.bone, border: `1.5px solid ${isHero ? T.brass : isAgg ? T.brass : stillIn ? "rgba(217,164,65,.5)" : T.line}` }}>
+              {isHero ? "YOU" : <span style={{ fontSize: 17 }}>{(prof && prof.icon) || "·"}</span>}
+              <div style={{ fontFamily: DISP, fontWeight: 700, fontSize: 10.5, letterSpacing: 0.5, marginTop: 1, color: isHero ? "#171309" : T.bone }}>{seat.pos}</div>
+              {!isHero && v && v.stk != null && !folded && <div style={{ fontFamily: MONO, fontSize: 9.5, marginTop: 1, color: v.stk < 45 ? T.heart : v.stk >= 200 ? T.club : T.dim }}>{Math.round(v.stk)}bb</div>}
             </div>
-            {v && v.act && v.act !== "folds" && <div style={{ fontFamily: MONO, fontSize: 8.5, color: T.brass, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{v.act}</div>}
-            {seat.seat === btn && <div style={{ position: "absolute", right: -6, top: -6, width: 15, height: 15, borderRadius: 8, background: T.bone, color: "#171309", fontFamily: DISP, fontWeight: 700, fontSize: 9, lineHeight: "15px", border: "1px solid #0007" }}>D</div>}
+            {v && v.act && v.act !== "folds" && <div style={{ fontFamily: MONO, fontSize: 10.5, fontWeight: isAgg ? 700 : 400, lineHeight: 1.15, color: isAgg ? T.brass : T.dim, marginTop: 3 }}>{v.act}</div>}
           </div>
         );
       })}
+      <div style={{ position: "absolute", left: dbx, top: dby, transform: "translate(-50%,-50%)", transition: "left .24s ease, top .24s ease",
+        width: 20, height: 20, borderRadius: 10, background: T.bone, color: "#171309", fontFamily: DISP, fontWeight: 800, fontSize: 12, lineHeight: "20px", textAlign: "center", border: "1.5px solid #0007", boxShadow: "0 1px 4px rgba(0,0,0,.55)", zIndex: 4 }}>D</div>
       <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", textAlign: "center" }}>
-        <div style={{ fontFamily: MONO, fontSize: 11, color: T.bone }}>{usd(sc.potBB * sc.bbv)}</div>
+        <div style={{ fontFamily: MONO, fontSize: 14, fontWeight: 500, color: T.bone }}>{usd(sc.potBB * sc.bbv)}</div>
         <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 8, letterSpacing: 1.5, color: T.dim }}>POT</div>
       </div>
     </div>
