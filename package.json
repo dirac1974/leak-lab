@@ -7,6 +7,7 @@
     "build": "esbuild src/entry.jsx --bundle --minify --jsx=automatic --loader:.jsx=jsx --outfile=.build/leak-lab.bundle.js && node build.js",
     "test": "node tools/test/run-tests.js",
     "sim:test": "node tools/sim/test-evaluator.js",
+    "sim:oracle": "node tools/sim/oracle.js",
     "serve": "npx --yes http-server -p 8080 -c-1 ."
   },
   "devDependencies": {

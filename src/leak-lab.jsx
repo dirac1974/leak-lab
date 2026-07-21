@@ -222,7 +222,10 @@ function stackoffZones(jamRep, eff, isJam) {
   const jr = jamRep == null ? GTO_JAMREP : jamRep;
   const e = eff == null ? 100 : eff;
   // Pot-odds proxy: short = priced in (call wider), deep = need to be well ahead.
-  const oddsF = Math.max(0.82, Math.min(1.6, 1 + (100 - e) * 0.008));
+  // Deep tightens steeply — at 200bb+ the dead money is tiny next to the stack,
+  // so stacking off needs a big edge (MC oracle: calling KK/TT off 200bb vs a
+  // tight jam is -40 to -68bb). Short widens (priced in).
+  const oddsF = e <= 100 ? Math.min(1.5, 0.88 + (100 - e) * 0.008) : Math.max(0.38, 0.88 - (e - 100) * 0.005);
   const widen = isJam ? 1 : 1.25; // a sized 4-bet lets you see a flop; a jam doesn't
   let c = Math.max(0.4, Math.min(45, jr * oddsF * widen));
   const r = Math.max(0.25, Math.min(6, jr * 0.25)); // re-jam/5-bet only the nuts (wider vs maniacs)

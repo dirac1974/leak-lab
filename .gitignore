@@ -1,6 +1,7 @@
 node_modules/
 .build/
 tools/test/.build/
+tools/sim/.build/
 *.log
 .DS_Store
 .vscode/

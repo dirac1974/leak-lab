@@ -103,8 +103,10 @@ const NIT = M.PROF.nit.jamRep, MAN = M.PROF.maniac.jamRep;
 ok("QQ folds a nit shove deep (100bb)", jamAt(NIT, 100, pct.QQ) === "fold");
 ok("QQ folds a nit shove at 75bb", jamAt(NIT, 75, pct.QQ) === "fold");
 ok("QQ calls a nit shove when priced in (40bb)", jamAt(NIT, 40, pct.QQ) === "call");
-ok("KK always calls a nit shove (100bb)", jamAt(NIT, 100, pct.KK) === "call");
-ok("KK calls a nit shove even deep (200bb)", jamAt(NIT, 200, pct.KK) === "call");
+ok("KK calls a nit shove at 100bb", jamAt(NIT, 100, pct.KK) === "call");
+// Deep vs a pure nit, folding KK is the correct laydown (MC oracle: calling is ~-47bb).
+ok("KK folds a nit shove at 200bb (deep laydown)", jamAt(NIT, 200, pct.KK) === "fold");
+ok("only AA calls a nit shove at 200bb", jamAt(NIT, 200, pct.AA) === "call");
 ok("AKs folds a nit shove deep", jamAt(NIT, 100, pct.AKs) === "fold");
 ok("QQ snap-calls a maniac shove at any depth", jamAt(MAN, 200, pct.QQ) === "call" && jamAt(MAN, 30, pct.QQ) === "call");
 // Directional: tighter jammer => tighter call threshold; shorter stack => wider.
