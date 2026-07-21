@@ -56,6 +56,76 @@ function deal() {
   const label = hiC.r === loC.r ? RC[hiC.r] + RC[loC.r] : RC[hiC.r] + RC[loC.r] + (suited ? "s" : "o");
   return { cards: [hiC, loC], label, pct: PCT[label] };
 }
+/* ---------------- On-device equity (Monte Carlo) ----------------
+   Real equity of the hero's exact hand vs a modeled villain range, so the "run
+   the math" button gives ground truth, not the heuristic percentile. Card int:
+   (r-2)*4 + suit, so rank = c>>2 (0-12), suit = c&3. Exact 5-card scorer packs
+   category + tiebreaks into one integer; eval7 takes the best of C(7,5)=21. */
+const SIDX = { s: 0, h: 1, d: 2, c: 3 };
+const encCard = (c) => (c.r - 2) * 4 + SIDX[c.s];
+function rank5i(c0, c1, c2, c3, c4) {
+  const r0 = c0 >> 2, r1 = c1 >> 2, r2 = c2 >> 2, r3 = c3 >> 2, r4 = c4 >> 2;
+  const flush = ((c0 & 3) === (c1 & 3)) && ((c1 & 3) === (c2 & 3)) && ((c2 & 3) === (c3 & 3)) && ((c3 & 3) === (c4 & 3));
+  const cnt = [0,0,0,0,0,0,0,0,0,0,0,0,0];
+  cnt[r0]++; cnt[r1]++; cnt[r2]++; cnt[r3]++; cnt[r4]++;
+  let mask = (1<<r0)|(1<<r1)|(1<<r2)|(1<<r3)|(1<<r4);
+  let sHigh = -1;
+  if (mask === 0b1000000001111) sHigh = 3; // wheel A-5
+  else for (let h = 12; h >= 4; h--) { const need = 0b11111 << (h - 4); if ((mask & need) === need) { sHigh = h; break; } }
+  if (flush && sHigh >= 0) return (8 << 20) | (sHigh << 16);
+  let quad = -1, trip = -1, p1 = -1, p2 = -1;
+  for (let r = 12; r >= 0; r--) { if (cnt[r] === 4) quad = r; else if (cnt[r] === 3) trip = r; else if (cnt[r] === 2) { if (p1 < 0) p1 = r; else p2 = r; } }
+  if (quad >= 0) { const k = [r0,r1,r2,r3,r4].find((r) => r !== quad); return (7<<20)|(quad<<16)|(k<<12); }
+  if (trip >= 0 && p1 >= 0) return (6<<20)|(trip<<16)|(p1<<12);
+  if (flush) { const a=[r0,r1,r2,r3,r4].sort((x,y)=>y-x); return (5<<20)|(a[0]<<16)|(a[1]<<12)|(a[2]<<8)|(a[3]<<4)|a[4]; }
+  if (sHigh >= 0) return (4<<20)|(sHigh<<16);
+  if (trip >= 0) { const ks=[r0,r1,r2,r3,r4].filter((r)=>r!==trip).sort((x,y)=>y-x); return (3<<20)|(trip<<16)|(ks[0]<<12)|(ks[1]<<8); }
+  if (p1 >= 0 && p2 >= 0) { const k=[r0,r1,r2,r3,r4].find((r)=>r!==p1&&r!==p2); return (2<<20)|(p1<<16)|(p2<<12)|(k<<8); }
+  if (p1 >= 0) { const ks=[r0,r1,r2,r3,r4].filter((r)=>r!==p1).sort((x,y)=>y-x); return (1<<20)|(p1<<16)|(ks[0]<<12)|(ks[1]<<8)|(ks[2]<<4); }
+  const a=[r0,r1,r2,r3,r4].sort((x,y)=>y-x); return (a[0]<<16)|(a[1]<<12)|(a[2]<<8)|(a[3]<<4)|a[4];
+}
+const C7 = (() => { const o=[]; for(let a=0;a<3;a++)for(let b=a+1;b<4;b++)for(let d=b+1;d<5;d++)for(let e=d+1;e<6;e++)for(let f=e+1;f<7;f++)o.push([a,b,d,e,f]); return o; })();
+function eval7(c) { let best = -1; for (let i=0;i<C7.length;i++){ const t=C7[i]; const s=rank5i(c[t[0]],c[t[1]],c[t[2]],c[t[3]],c[t[4]]); if(s>best)best=s; } return best; }
+/* Sample one valid combo of a 169-class avoiding `used` (Set of card ints). */
+function sampleCombo(cls, used) {
+  const hiR = cls.hi - 2, loR = cls.lo - 2;
+  for (let t = 0; t < 12; t++) {
+    let s1 = (Math.random()*4)|0, s2;
+    if (cls.suited) s2 = s1; else { do { s2 = (Math.random()*4)|0; } while (s2 === s1); }
+    const c1 = hiR*4+s1, c2 = loR*4+s2;
+    if (c1 !== c2 && !used.has(c1) && !used.has(c2)) return [c1, c2];
+  }
+  return null;
+}
+/* Equity of heroCards (array of {r,s}) vs the top `rangePct`% preflop range,
+   completing from `board` (0–5 cards). Returns {equity, iters} or null. */
+function mcEquity(heroCards, board, rangePct, iters) {
+  const hero = heroCards.map(encCard);
+  const bd = (board || []).map(encCard);
+  const classes = RANKED.filter((h) => h.pct <= rangePct);
+  if (!classes.length || hero.length < 2) return null;
+  const totalCombos = classes.reduce((s, h) => s + h.combos, 0);
+  const used0 = new Set([...hero, ...bd]);
+  let win = 0, tie = 0, n = 0;
+  for (let it = 0; it < iters; it++) {
+    let vh = null;
+    for (let tr = 0; tr < 8 && !vh; tr++) {
+      let r = Math.random() * totalCombos, cls = classes[0];
+      for (let i = 0; i < classes.length; i++) { r -= classes[i].combos; if (r <= 0) { cls = classes[i]; break; } }
+      vh = sampleCombo(cls, used0);
+    }
+    if (!vh) continue;
+    const used = new Set(used0); used.add(vh[0]); used.add(vh[1]);
+    const b5 = bd.slice();
+    while (b5.length < 5) { const c = (Math.random()*52)|0; if (!used.has(c)) { used.add(c); b5.push(c); } }
+    const hs = eval7([hero[0], hero[1], b5[0], b5[1], b5[2], b5[3], b5[4]]);
+    const vs = eval7([vh[0], vh[1], b5[0], b5[1], b5[2], b5[3], b5[4]]);
+    if (hs > vs) win++; else if (hs === vs) tie++;
+    n++;
+  }
+  return n ? { equity: (win + tie / 2) / n, iters: n } : null;
+}
+
 function sampleFromTop(t) {
   const cand = RANKED.filter((h) => h.pct <= t);
   const total = cand.reduce((s, h) => s + h.combos, 0);
@@ -337,6 +407,29 @@ function gradeSized(zones, pct, action, potBB, m = 6) {
   if (d <= m) return { verdict: "ok", ev: +(d * 0.04).toFixed(2), best: bestId, zones };
   return { verdict: "miss", ev: +Math.min(EV_CAP, 0.05 + d * EV_PER_PCT).toFixed(2), best: bestId, zones };
 }
+/* Stack-off pots (all-in / 4-bet) are graded pot-scaled, not percentile-tiny:
+   being on the wrong side of the call/fold line in a jam pot costs a big slice
+   of the pot, so the MIX forgiveness that makes sense for a min-raise defence is
+   wrong here (it was pricing a QQ-vs-nit-shove misclick at ~0.01bb). */
+function gradeStackoff(zones, pct, action, potBB) {
+  const zone = zones.find((z) => pct >= z.from && pct < z.to) || zones[zones.length - 1];
+  const norm = (x) => (typeof x === "string" && x.indexOf("raise") === 0 ? "raise" : x);
+  if (norm(action) === norm(zone.a)) return { verdict: "best", ev: 0, best: zone.a, zones };
+  const mine = zones.filter((z) => norm(z.a) === norm(action));
+  let dist = 0; if (mine.length) { dist = 999; for (const z of mine) dist = Math.min(dist, pct < z.from ? z.from - pct : pct - z.to); if (dist === 999) dist = 0; }
+  const frac = Math.max(0.03, Math.min(0.5, 0.03 + dist * 0.02)); // deeper into the wrong region = costlier
+  return { verdict: "miss", ev: +((potBB || 20) * frac).toFixed(2), best: zone.a, zones };
+}
+/* Dollar amount hero must put in to call, for the preflop facing-a-bet stages. */
+function toCallBB(sc) {
+  const bv = sc.bbv || 2, hu = sc.hu;
+  if (sc.stage === "vsJam") return sc.jamCall != null ? sc.jamCall : Math.max(0.5, Math.min(sc.aggStk || sc.S, sc.S));
+  if (sc.stage === "vsOpen") return Math.max(0, (sc.openBB || OPEN(hu, bv)) - (blindC(sc.heroPos, bv) || 0));
+  if (sc.stage === "vs3bet") { const ob = sc.openBB || OPEN(hu, bv); return Math.max(0, threeBetBB(ob, "s") - ob); }
+  if (sc.stage === "vs4bet") { const ob = sc.openBB || OPEN(hu, bv); const tb = threeBetBB(ob, "s"); return Math.max(0, fourBetBB(tb) - tb); }
+  return 0;
+}
+
 function resolveLeak(stage, g, action) {
   if (g.sized === "small") return stage === "riverBet" ? "rv_undersize" : stage === "rfi" ? "rfi_size" : stage === "vsOpen" ? "def_size" : "pf_undersize";
   if (g.sized === "big") return stage === "riverBet" ? "rv_oversize" : stage === "rfi" ? "rfi_size" : stage === "vsOpen" ? "def_size" : "pf_oversize";
@@ -1136,7 +1229,7 @@ function continuation(sc, action, bbv) {
       const jams = ["nit", "station", "reg"].includes(sc.openerP.id) || oppStk <= fourC * 1.8 || oppStk < 60;
       if (jams) {
         const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `shoves ${usd(oppStk * bv)}` } : x));
-        return { text: `You ${raiseWord} ${money(my3)}. ${sc.openerP.icon} ${sc.openerPos} shoves all-in — ${Math.round(oppStk)}bb.`, nextSc: { ...sc, stage: "vsJam", aggP: sc.openerP, aggPos: sc.openerPos, villains: patched, aggStk: sc.openerStk, effBB: 0, potBB: (my3 + oppStk + dead) } };
+        return { text: `You ${raiseWord} ${money(my3)}. ${sc.openerP.icon} ${sc.openerPos} shoves all-in — ${Math.round(oppStk)}bb.`, nextSc: { ...sc, stage: "vsJam", aggP: sc.openerP, aggPos: sc.openerPos, villains: patched, aggStk: sc.openerStk, effBB: 0, jamCall: Math.max(0.5, Math.min(oppStk, sc.S) - my3), potBB: (my3 + oppStk + dead) } };
       }
       const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `4-bets ${usd(fourC * bv)}` } : x));
       return { text: `You ${raiseWord} ${money(my3)}. ${sc.openerP.icon} ${sc.openerPos} 4-bets to ${money(fourC)}.`, nextSc: { ...sc, stage: "vs4bet", aggP: sc.openerP, aggPos: sc.openerPos, villains: patched, aggStk: sc.openerStk, effBB: effVs(sc.S, sc.openerStk, fourC), potBB: (my3 + fourC + nC * openC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.openerPos, bv)) } };
@@ -1171,7 +1264,7 @@ function continuation(sc, action, bbv) {
     const r = respond(sc.aggP.vs3);
     if (r === "r") {
       const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: "jams" } : x));
-      return { text: `${sc.aggP.icon} ${sc.aggPos} jams — ${Math.round(Math.min(sc.S, sc.aggStk || sc.S))}bb effective.`, nextSc: { ...sc, stage: "vsJam", aggP: sc.aggP, aggPos: sc.aggPos, villains: patched, effBB: 0, potBB: (fourC + Math.min(sc.S, sc.aggStk || sc.S) + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.aggPos, bv)) } };
+      return { text: `${sc.aggP.icon} ${sc.aggPos} jams — ${Math.round(Math.min(sc.S, sc.aggStk || sc.S))}bb effective.`, nextSc: { ...sc, stage: "vsJam", aggP: sc.aggP, aggPos: sc.aggPos, villains: patched, effBB: 0, jamCall: Math.max(0.5, Math.min(sc.aggStk || sc.S, sc.S) - fourC), potBB: (fourC + Math.min(sc.S, sc.aggStk || sc.S) + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.aggPos, bv)) } };
     }
     if (r === "c") {
       const pot4 = (2 * fourC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.aggPos, bv));
@@ -1297,7 +1390,7 @@ function OptionCosts({ sc, zones, pct, chosen, bbv }) {
     : sc.stage === "rfi" ? (sc.heroPos === "BB" && sc.limpers ? ["limp", ...openIds(sc.bbv || 2, sc.hu)] : ["fold", "limp", ...openIds(sc.bbv || 2, sc.hu)])
     : sc.stage === "vsOpen" ? ["fold", "call", "raiseS", "raiseB"]
     : ["fold", "call", "raise"];
-  const gradeOf = (a) => AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB)
+  const gradeOf = (a) => (sc.stage === "vsJam" || sc.stage === "vs4bet") ? gradeStackoff(zones, pct, a, sc.potBB) : AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB)
     : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a)
     : grade(zones, pct, a, post ? 6 : undefined);
   const chipC = (a) => a === "fold" ? T.foldc : a === "check" ? ZC.check : a === "call" || a === "limp" ? T.diamond
@@ -1411,7 +1504,18 @@ function TableView({ sc, onPeek }) {
                 color: isHero ? "#171309" : T.bone, border: `1.5px solid ${isHero ? T.brass : isAgg ? T.brass : stillIn ? "rgba(217,164,65,.5)" : T.line}` }}>
               {isHero ? "YOU" : <span style={{ fontSize: 17 }}>{(prof && prof.icon) || "·"}</span>}
               <div style={{ fontFamily: DISP, fontWeight: 700, fontSize: 10.5, letterSpacing: 0.5, marginTop: 1, color: isHero ? "#171309" : T.bone }}>{seat.pos}</div>
-              {!isHero && v && v.stk != null && !folded && <div style={{ fontFamily: MONO, fontSize: 9.5, marginTop: 1, color: v.stk < 45 ? T.heart : v.stk >= 200 ? T.club : T.dim }}>{Math.round(v.stk)}bb</div>}
+              {!isHero && v && v.stk != null && !folded && (
+                <div style={{ marginTop: 1, lineHeight: 1.05, color: v.stk < 45 ? T.heart : v.stk >= 200 ? T.club : T.dim }}>
+                  <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 600 }}>{usd(v.stk * sc.bbv)}</div>
+                  <div style={{ fontFamily: MONO, fontSize: 8.5, opacity: 0.75 }}>{Math.round(v.stk)}bb</div>
+                </div>
+              )}
+              {isHero && sc.effBB != null && (
+                <div style={{ marginTop: 1, lineHeight: 1.05, color: "#171309" }}>
+                  <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700 }}>{usd(sc.effBB * sc.bbv)}</div>
+                  <div style={{ fontFamily: MONO, fontSize: 8.5, opacity: 0.7 }}>{Math.round(sc.effBB)}bb</div>
+                </div>
+              )}
             </div>
             {v && v.act && v.act !== "folds" && <div style={{ fontFamily: MONO, fontSize: 10.5, fontWeight: isAgg ? 700 : 400, lineHeight: 1.15, color: isAgg ? T.brass : T.dim, marginTop: 3 }}>{v.act}</div>}
           </div>
@@ -1449,7 +1553,11 @@ function actionLabel(stage, a, hu, sc, bbv) {
   }
   if (a === "fold") return "Fold";
   if (a === "limp") { if (sc && sc.heroPos === "BB" && sc.limpers) return "Check"; return sc && sc.limpers ? `Overlimp ${usd(chipBB(1, bv) * bv)}` : `Call ${usd(chipBB(1, bv) * bv)}`; }
-  if (a === "call") return stage === "vsJam" ? "Call all-in" : "Call";
+  if (a === "call") {
+    const tc = sc ? toCallBB(sc) : 0;
+    const amt = tc > 0 ? ` ${usd(chipBB(tc, bv) * bv)}` : "";
+    return stage === "vsJam" ? `Call all-in${amt}` : `Call${amt}`;
+  }
   if (a && a.indexOf("raise") === 0) {
     if (stage === "rfi") { const nL = (sc && sc.limpers) || 0; return `${nL ? "Iso" : "Open"} ${usd(chipBB(openBBForId(a, bv, hu) + nL, bv) * bv)}`; }
     if (stage === "vsOpen") { const ob = sc && sc.openBB ? sc.openBB : OPEN(hu, bv); const nC = (sc && sc.coldCallers && sc.coldCallers.length) || 0; const amt = nC ? squeezeBB(ob, a === "raiseB" ? "b" : "s", nC) : threeBetBB(ob, a === "raiseB" ? "b" : "s"); return `3-Bet ${usd(chipBB(amt, bv) * bv)}`; }
@@ -2156,6 +2264,21 @@ export default function App() {
   const [openLeak, setOpenLeak] = useState(null);
   const [leakScope, setLeakScope] = useState("session");
   const [bkMsg, setBkMsg] = useState("");
+  const [mc, setMc] = useState(null); // Monte-Carlo result for the current all-in spot
+  const runMath = () => {
+    if (!sc || sc.stage !== "vsJam") return;
+    setMc({ busy: true });
+    // Defer so the "simulating…" state paints before the (synchronous) sim runs.
+    setTimeout(() => {
+      const eq = mcEquity(sc.hand.cards, sc.board || [], sc.aggP.jamRep, 12000);
+      if (!eq) { setMc(null); return; }
+      const call = sc.jamCall != null ? sc.jamCall : toCallBB(sc);
+      const potBefore = sc.potBB;
+      const needed = call / (potBefore + call);
+      const evCall = eq.equity * potBefore - (1 - eq.equity) * call; // hero net bb by calling
+      setMc({ equity: eq.equity, needed, evCall });
+    }, 30);
+  };
   const [cloud, setCloud] = useState(null); // { at, rt, email }
   const [cloudHist, setCloudHist] = useState(null); // cloud session records when signed in
   const [emailInput, setEmailInput] = useState("");
@@ -2228,6 +2351,7 @@ export default function App() {
   };
 
   const start = (f) => {
+    setMc(null);
     if (cfg.play === "hand") {
       const tbl = buildTable();
       const { t, s } = dealHand(tbl);
@@ -2245,7 +2369,7 @@ export default function App() {
     const post = POST_STAGES.includes(sc.stage);
     const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
     const pct = post ? sc.cls.rank : sc.hand.pct;
-    const g = AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
+    const g = (sc.stage === "vsJam" || sc.stage === "vs4bet") ? gradeStackoff(zones, pct, a, sc.potBB) : AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
     const cont = continuation(sc, a, bbv);
     const terminal = !cont.nextSc;
     const hEv = +(handEv + g.ev).toFixed(2);
@@ -2276,7 +2400,7 @@ export default function App() {
   };
 
   const next = () => {
-    setPeek(null);
+    setPeek(null); setMc(null);
     if (fb && fb.cont.nextSc) { setSc(fb.cont.nextSc); setFb(null); return; }
     if (cfg.play === "hand" && table) {
       const { t, s } = dealHand({ ...table, btn: table.btn + 1 });
@@ -2393,6 +2517,27 @@ export default function App() {
               <div style={{ marginTop: 10, fontFamily: DISP, fontWeight: 700, fontSize: 15, letterSpacing: 2, color: T.dim }}>
                 {sc.hand.label} · {sc.heroPos}{isPost ? ` — ${sc.cls.label}` : ""}
               </div>
+              {sc.stage === "vsJam" && (
+                <div style={{ marginTop: 12 }}>
+                  {!mc && <span className="ll-tap" onClick={runMath} style={{ fontFamily: DISP, fontWeight: 700, fontSize: 12, letterSpacing: 1.5, color: T.diamond, border: `1.5px solid ${T.diamond}`, borderRadius: 999, padding: "7px 16px", display: "inline-block" }}>🎲 RUN THE MATH</span>}
+                  {mc && mc.busy && <span style={{ fontFamily: MONO, fontSize: 11, color: T.dim }}>simulating 12,000 runouts…</span>}
+                  {mc && !mc.busy && (() => {
+                    const call = mc.evCall >= 0;
+                    return (
+                      <div style={{ background: T.panel, border: `1px solid ${call ? T.club : T.heart}`, borderRadius: 12, padding: "10px 14px", textAlign: "left", maxWidth: 320, margin: "0 auto" }}>
+                        <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10, letterSpacing: 1.5, color: T.dim }}>MONTE CARLO · {sc.hand.label} vs {sc.aggP.name}'s shove range</div>
+                        <div style={{ fontFamily: MONO, fontSize: 13, color: T.bone, marginTop: 6 }}>
+                          <span style={{ color: T.brass, fontSize: 15 }}>{(mc.equity * 100).toFixed(1)}%</span> equity · need <span style={{ color: T.brass }}>{(mc.needed * 100).toFixed(1)}%</span>
+                        </div>
+                        <div style={{ fontFamily: MONO, fontSize: 12.5, color: call ? T.club : T.heart, marginTop: 5 }}>
+                          Calling = {mc.evCall >= 0 ? "+" : ""}{mc.evCall.toFixed(1)}bb ({usd(mc.evCall * bbv)}) → <b>{call ? "CALL" : "FOLD"}</b>
+                        </div>
+                        <div style={{ fontFamily: MONO, fontSize: 9.5, color: T.dim, marginTop: 5 }}>real equity of your exact hand vs their modeled range — 12k random runouts</div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
             </div>
 
             {fb && (
