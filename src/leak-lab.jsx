@@ -1724,7 +1724,7 @@ const EXPLOIT = {
     bettor: "Bluff-catch wider and call down lighter — LAGs over-bluff, so hands GTO folds become profitable calls against their barrels.",
   },
   maniac: {
-    behind: "Trap — don't bother opening marginal hands into a spewer. Let them raise, then re-raise your premiums for value; their range is mostly air.",
+    behind: "Fold marginal opens into a spewer — but raise your premiums, don't limp to trap them. When a Maniac jams over your open you're way ahead of their air, so raising builds the pot AND keeps fold equity vs everyone else; limping surrenders both and invites the field in.",
     opener: "Re-raise for value with hands GTO would flat — a Maniac's opens are mostly air, so widen your value 3-bets dramatically and let them pile in.",
     aggressor: "Continue very wide — a Maniac's raises are almost all bluffs; fold only your very worst and let them barrel off.",
     caller: "Stop bluffing entirely and check your strong hands to trap — they won't fold to your bluffs and they'll do the bluffing for you. Induce, don't push.",
