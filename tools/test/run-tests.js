@@ -94,5 +94,23 @@ ok("bluffs grow vs nit", bluffW(M.zonesFor("cbet", { tb: "ahi", ip: true, spr: 6
 ok("winPMw powers", Math.abs(M.winPMw(0.5, 2) - 0.25) < 1e-9);
 ok("effVs min-stack", M.effVs(500, 80, 5) === 75);
 
+/* ---- 3. Stackoff (vsJam / vs4bet) villain + stack awareness ---- */
+// The QQ-vs-nit-jam bug this suite exists to prevent regressing.
+const QQ = M.PROF ? undefined : undefined; // percentiles via PCT below
+const pct = { QQ: 1.13, KK: 0.68, AA: 0.23, AKs: 2.41, JJ: 1.58 };
+const jamAt = (jamRep, eff, p) => { const z = M.zonesFor("vsJam", { jamRep, effAgg: eff }).find((x) => p >= x.from && p < x.to); return z && z.a; };
+const NIT = M.PROF.nit.jamRep, MAN = M.PROF.maniac.jamRep;
+ok("QQ folds a nit shove deep (100bb)", jamAt(NIT, 100, pct.QQ) === "fold");
+ok("QQ folds a nit shove at 75bb", jamAt(NIT, 75, pct.QQ) === "fold");
+ok("QQ calls a nit shove when priced in (40bb)", jamAt(NIT, 40, pct.QQ) === "call");
+ok("KK always calls a nit shove (100bb)", jamAt(NIT, 100, pct.KK) === "call");
+ok("KK calls a nit shove even deep (200bb)", jamAt(NIT, 200, pct.KK) === "call");
+ok("AKs folds a nit shove deep", jamAt(NIT, 100, pct.AKs) === "fold");
+ok("QQ snap-calls a maniac shove at any depth", jamAt(MAN, 200, pct.QQ) === "call" && jamAt(MAN, 30, pct.QQ) === "call");
+// Directional: tighter jammer => tighter call threshold; shorter stack => wider.
+const jc = (jr, eff) => M.zonesFor("vsJam", { jamRep: jr, effAgg: eff }).find((z) => z.a === "call").to;
+ok("tighter jammer -> tighter calls", jc(M.PROF.nit.jamRep, 100) < jc(M.PROF.tag.jamRep, 100) && jc(M.PROF.tag.jamRep, 100) < jc(MAN, 100));
+ok("shorter stack -> wider calls (priced in)", jc(NIT, 30) > jc(NIT, 100) && jc(NIT, 100) > jc(NIT, 200));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

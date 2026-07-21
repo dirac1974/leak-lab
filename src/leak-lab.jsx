@@ -143,6 +143,22 @@ function vs4Chart(eff) {
   return { r, c };
 }
 const VSJAM = { c: 4.5 };
+const GTO_JAMREP = 4.5;
+/* Facing an all-in (or a committing 4-bet), the decision is dominated by WHO is
+   shoving and the price. A Nit gets it in with ~{KK,AA} (top 0.9%), so QQ (1.13%)
+   is behind it and folds deep — but shorter stacks are priced in and call wider.
+   Returns continue/re-jam thresholds as all-hands percentiles. */
+function stackoffZones(jamRep, eff, isJam) {
+  const jr = jamRep == null ? GTO_JAMREP : jamRep;
+  const e = eff == null ? 100 : eff;
+  // Pot-odds proxy: short = priced in (call wider), deep = need to be well ahead.
+  const oddsF = Math.max(0.82, Math.min(1.6, 1 + (100 - e) * 0.008));
+  const widen = isJam ? 1 : 1.25; // a sized 4-bet lets you see a flop; a jam doesn't
+  let c = Math.max(0.4, Math.min(45, jr * oddsF * widen));
+  const r = Math.max(0.25, Math.min(6, jr * 0.25)); // re-jam/5-bet only the nuts (wider vs maniacs)
+  c = Math.max(c, r + 0.3);
+  return { r, c };
+}
 const MIX = 2.5, EV_PER_PCT = 0.12, EV_CAP = 6;
 
 /* ---- C9: the lineup is strategy input ----
@@ -212,13 +228,13 @@ function zonesFor(stage, ctx) {
     const rT = d.r * tf * (nC ? 0.8 : 1) * wf;
     const cT = Math.min(85, d.c * tf * (1 + 0.22 * nC) * depthF * wf);
     return [
-      { a: "raiseS", lbl: nC ? "SQUEEZE" : "3-BET", from: 0, to: rT },
+      { a: "raiseS", lbl: "3-BET", from: 0, to: rT },
       { a: "call", from: rT, to: cT },
       { a: "fold", from: cT, to: 100 },
     ];
   }
   if (stage === "vs3bet") { const d3 = vs3Chart(ctx.heroPos, ctx.aggPos, ctx.effAgg); return [{ a: "raise", from: 0, to: d3.r }, { a: "call", from: d3.r, to: d3.c }, { a: "fold", from: d3.c, to: 100 }]; }
-  if (stage === "vs4bet") { const d4 = vs4Chart(ctx.effAgg); return [{ a: "raise", from: 0, to: d4.r }, { a: "call", from: d4.r, to: d4.c }, { a: "fold", from: d4.c, to: 100 }]; }
+  if (stage === "vs4bet") { const d4 = stackoffZones(ctx.jamRep, ctx.effAgg, false); return [{ a: "raise", from: 0, to: d4.r }, { a: "call", from: d4.r, to: d4.c }, { a: "fold", from: d4.c, to: 100 }]; }
   if (POST_STAGES.includes(stage)) {
     /* Solver-calibrated zone tables per flop archetype (aggregate-frequency informed), shifted by SPR.
        sh > 0 when shallow: value/stack-off widens, defends widen. dp: very deep tightens thin value.
@@ -285,7 +301,8 @@ function zonesFor(stage, ctx) {
     const c = Math.min(80, (47 + sh * 0.6) * ((1 / (1 + frac)) / (1 / 1.75)) * mwC * cbF);
     return [{ a: "call", from: 0, to: c }, { a: "fold", from: c, to: 100 }];
   }
-  return [{ a: "call", from: 0, to: VSJAM.c }, { a: "fold", from: VSJAM.c, to: 100 }];
+  const jz = stackoffZones(ctx.jamRep, ctx.effAgg, true);
+  return [{ a: "call", from: 0, to: jz.c }, { a: "fold", from: jz.c, to: 100 }];
 }
 
 function grade(zones, pct, action, m = MIX) {
@@ -631,19 +648,19 @@ const PROFILES = [
      was an online 3-bet rate — live tables run ~4-7%, so the baseline bot now
      3-bets 11% (still theory-correct-ish, no longer double the live room).
      C9's lineup weights anchor to this profile, so it defines "neutral". */
-  { id: "gto", name: "GTO Bot", icon: "⚖️", desc: "Balanced, textbook frequencies", rfi: 1.0, cbet: 0.68, vsRaise: { f: 0.41, c: 0.48, r: 0.11 }, vs3: { f: 0.54, c: 0.36, r: 0.1 }, vsBet: { f: 0.4, c: 0.48, r: 0.12 },
+  { id: "gto", name: "GTO Bot", icon: "⚖️", desc: "Balanced, textbook frequencies", rfi: 1.0, cbet: 0.68, vsRaise: { f: 0.41, c: 0.48, r: 0.11 }, vs3: { f: 0.54, c: 0.36, r: 0.1 }, vsBet: { f: 0.4, c: 0.48, r: 0.12 }, jamRep: 4.5, jamRange: "a balanced {QQ+, AK} with a few bluffs",
     spot: "Rare in a live room. Treat a quiet, competent unknown this way until they show you otherwise — then re-type them." },
-  { id: "reg", name: "Live Reg", icon: "🧢", desc: "Solid live regular — honest lines, under-bluffs", rfi: 0.9, cbet: 0.6, vsRaise: { f: 0.52, c: 0.42, r: 0.06 }, vs3: { f: 0.6, c: 0.32, r: 0.08 }, vsBet: { f: 0.47, c: 0.43, r: 0.1 },
+  { id: "reg", name: "Live Reg", icon: "🧢", desc: "Solid live regular — honest lines, under-bluffs", rfi: 0.9, cbet: 0.6, vsRaise: { f: 0.52, c: 0.42, r: 0.06 }, vs3: { f: 0.6, c: 0.32, r: 0.08 }, vsBet: { f: 0.47, c: 0.43, r: 0.1 }, jamRep: 1.6, jamRange: "{KK+, AK} — QQ only sometimes, essentially never a bluff",
     spot: "Knows the dealers by name, racks chips neatly, plays the same solid hands the same way every time. Their bluffs exist but are rare — big aggression means a big hand." },
-  { id: "nit", name: "Nit", icon: "🪨", desc: "Ultra-tight — waits for premiums, folds a lot", rfi: 0.65, cbet: 0.55, vsRaise: { f: 0.58, c: 0.34, r: 0.08 }, vs3: { f: 0.7, c: 0.24, r: 0.06 }, vsBet: { f: 0.52, c: 0.4, r: 0.08 },
+  { id: "nit", name: "Nit", icon: "🪨", desc: "Ultra-tight — waits for premiums, folds a lot", rfi: 0.65, cbet: 0.55, vsRaise: { f: 0.58, c: 0.34, r: 0.08 }, vs3: { f: 0.7, c: 0.24, r: 0.06 }, vsBet: { f: 0.52, c: 0.4, r: 0.08 }, jamRep: 0.9, jamRange: "{KK, AA}, occasionally QQ or AK — never a bluff",
     spot: "Neat chip stacks, an hour of folding, never rebuys deep. When they finally raise it's the top of the deck — believe them and fold hands that look pretty." },
-  { id: "tag", name: "TAG", icon: "🎯", desc: "Tight-aggressive reg — solid ranges, picks spots", rfi: 0.95, cbet: 0.66, vsRaise: { f: 0.45, c: 0.42, r: 0.13 }, vs3: { f: 0.55, c: 0.34, r: 0.11 }, vsBet: { f: 0.44, c: 0.45, r: 0.11 },
+  { id: "tag", name: "TAG", icon: "🎯", desc: "Tight-aggressive reg — solid ranges, picks spots", rfi: 0.95, cbet: 0.66, vsRaise: { f: 0.45, c: 0.42, r: 0.13 }, vs3: { f: 0.55, c: 0.34, r: 0.11 }, vsBet: { f: 0.44, c: 0.45, r: 0.11 }, jamRep: 2.6, jamRange: "{QQ+, AK}, plus the rare balanced bluff",
     spot: "Plays few hands but plays them with a plan — quick folds, deliberate raises, watches the action even when they're out. Buys in for the max." },
-  { id: "lag", name: "LAG", icon: "🔥", desc: "Loose-aggressive — wide ranges, relentless pressure", rfi: 1.35, cbet: 0.8, vsRaise: { f: 0.28, c: 0.46, r: 0.26 }, vs3: { f: 0.42, c: 0.38, r: 0.2 }, vsBet: { f: 0.32, c: 0.5, r: 0.18 },
+  { id: "lag", name: "LAG", icon: "🔥", desc: "Loose-aggressive — wide ranges, relentless pressure", rfi: 1.35, cbet: 0.8, vsRaise: { f: 0.28, c: 0.46, r: 0.26 }, vs3: { f: 0.42, c: 0.38, r: 0.2 }, vsBet: { f: 0.32, c: 0.5, r: 0.18 }, jamRep: 8, jamRange: "wide — {99+, AJ+, suited Broadways} and plenty of bluffs",
     spot: "In every other pot, isolating limpers, 3-betting light — but it's targeted: position, pressure, the soft seats. The difference from a Maniac is the picking of spots." },
-  { id: "station", name: "Station", icon: "📞", desc: "Calling station — calls almost anything, rarely folds or raises", rfi: 1.15, cbet: 0.45, vsRaise: { f: 0.14, c: 0.8, r: 0.06 }, vs3: { f: 0.25, c: 0.68, r: 0.07 }, vsBet: { f: 0.12, c: 0.83, r: 0.05 },
+  { id: "station", name: "Station", icon: "📞", desc: "Calling station — calls almost anything, rarely folds or raises", rfi: 1.15, cbet: 0.45, vsRaise: { f: 0.14, c: 0.8, r: 0.06 }, vs3: { f: 0.25, c: 0.68, r: 0.07 }, vsBet: { f: 0.12, c: 0.83, r: 0.05 }, jamRep: 1.2, jamRange: "the nuts — a passive player getting it in has {KK+}, and rarely even that",
     spot: "Calls \"to keep you honest,\" can't fold a pair or a draw, almost never raises. The one time they do raise, it's the nuts — that's the most reliable tell in live poker." },
-  { id: "maniac", name: "Maniac", icon: "💣", desc: "Hyper-aggro — raises constantly with anything", rfi: 1.7, cbet: 0.9, vsRaise: { f: 0.12, c: 0.52, r: 0.36 }, vs3: { f: 0.2, c: 0.45, r: 0.35 }, vsBet: { f: 0.2, c: 0.5, r: 0.3 },
+  { id: "maniac", name: "Maniac", icon: "💣", desc: "Hyper-aggro — raises constantly with anything", rfi: 1.7, cbet: 0.9, vsRaise: { f: 0.12, c: 0.52, r: 0.36 }, vs3: { f: 0.2, c: 0.45, r: 0.35 }, vsBet: { f: 0.2, c: 0.5, r: 0.3 }, jamRep: 16, jamRange: "almost anything — they stack off with air constantly",
     spot: "Straddles, raises dark, splashes chips with junk, stack swinging wildly. No patience and no plan — tighten up, wait for a real hand, and let them pay you off." },
 ];
 /* Plain-words summary of a profile's assumed ranges, for the detail view */
@@ -1112,6 +1129,15 @@ function continuation(sc, action, bbv) {
     }
     const r = respond(sc.openerP.vs3);
     if (r === "r") {
+      const oppStk = sc.openerStk == null ? sc.S : Math.min(sc.S, sc.openerStk);
+      const dead = nC * openC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.openerPos, bv);
+      // Tight types and committed/short stacks shove rather than play a 4-bet pot —
+      // this is the live "nit jams over your squeeze" spot.
+      const jams = ["nit", "station", "reg"].includes(sc.openerP.id) || oppStk <= fourC * 1.8 || oppStk < 60;
+      if (jams) {
+        const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `shoves ${usd(oppStk * bv)}` } : x));
+        return { text: `You ${raiseWord} ${money(my3)}. ${sc.openerP.icon} ${sc.openerPos} shoves all-in — ${Math.round(oppStk)}bb.`, nextSc: { ...sc, stage: "vsJam", aggP: sc.openerP, aggPos: sc.openerPos, villains: patched, aggStk: sc.openerStk, effBB: 0, potBB: (my3 + oppStk + dead) } };
+      }
       const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `4-bets ${usd(fourC * bv)}` } : x));
       return { text: `You ${raiseWord} ${money(my3)}. ${sc.openerP.icon} ${sc.openerPos} 4-bets to ${money(fourC)}.`, nextSc: { ...sc, stage: "vs4bet", aggP: sc.openerP, aggPos: sc.openerPos, villains: patched, aggStk: sc.openerStk, effBB: effVs(sc.S, sc.openerStk, fourC), potBB: (my3 + fourC + nC * openC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.openerPos, bv)) } };
     }
@@ -1418,7 +1444,7 @@ function actionLabel(stage, a, hu, sc, bbv) {
   if (a === "call") return stage === "vsJam" ? "Call all-in" : "Call";
   if (a && a.indexOf("raise") === 0) {
     if (stage === "rfi") { const nL = (sc && sc.limpers) || 0; return `${nL ? "Iso" : "Open"} ${usd(chipBB(openBBForId(a, bv, hu) + nL, bv) * bv)}`; }
-    if (stage === "vsOpen") { const ob = sc && sc.openBB ? sc.openBB : OPEN(hu, bv); const nC = (sc && sc.coldCallers && sc.coldCallers.length) || 0; const amt = nC ? squeezeBB(ob, a === "raiseB" ? "b" : "s", nC) : threeBetBB(ob, a === "raiseB" ? "b" : "s"); return `${nC ? "Squeeze" : "3-Bet"} ${usd(chipBB(amt, bv) * bv)}`; }
+    if (stage === "vsOpen") { const ob = sc && sc.openBB ? sc.openBB : OPEN(hu, bv); const nC = (sc && sc.coldCallers && sc.coldCallers.length) || 0; const amt = nC ? squeezeBB(ob, a === "raiseB" ? "b" : "s", nC) : threeBetBB(ob, a === "raiseB" ? "b" : "s"); return `3-Bet ${usd(chipBB(amt, bv) * bv)}`; }
   }
   if (stage === "rfi") return `Open ${usd(chipBB(OPEN(hu, bv), bv) * bv)}`;
   if (stage === "vsOpen") return `3-Bet ${usd(chipBB(TBET(hu, bv), bv) * bv)}`;
@@ -1474,17 +1500,37 @@ function adviceFor(sc, zones, bbv) {
       : `Consider: widen vs loose openers, tighten vs nits — the seat matters more than the cards.`;
     return `${lead}${priceNote}${stackNote} ${alt}`;
   }
-  if (sc.stage === "vs3bet" || sc.stage === "vs4bet" || sc.stage === "vsJam") {
+  // Facing an all-in or a 4-bet: the villain's stack-off range and the price
+  // decide it — spell out both, and place the hero's exact hand against them.
+  if (sc.stage === "vs4bet" || sc.stage === "vsJam") {
     const P = sc.aggP;
-    const lead = sc.stage === "vsJam" ? `Facing the jam you need roughly the top ${VSJAM.c}% — it's pure math now.`
-      : zone.a === "raise" ? `Top of the range — keep the pressure on with a 4-bet.`
-      : zone.a === "call" ? `${sc.hand.label} continues vs the ${sc.stage === "vs3bet" ? "3-bet" : "4-bet"} — strong enough to see a flop, not enough to stack off.`
-      : `Below the continue line — folding to the ${sc.stage === "vs3bet" ? "3-bet" : "4-bet"} loses the least.`;
+    const isJam = sc.stage === "vsJam";
+    const rep = P.jamRep == null ? GTO_JAMREP : P.jamRep;
+    const effA = sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : sc.effBB;
+    const hn = sc.hand.label, hp = sc.hand.pct;
+    const place = hp <= rep * 0.5 ? `${hn} is ahead of that range — you want the money in`
+      : hp <= rep ? `${hn} sits right at the top of what they have — roughly a flip`
+      : hp <= rep * 2.2 ? `${hn} is behind that range — a coin flip at best, and usually dominated`
+      : `${hn} is crushed by that range`;
+    const verdict = zone.a === "raise" ? `You're ahead: ${isJam ? "call it off" : "jam over the top"}.`
+      : zone.a === "call" ? (isJam ? `That's a call — the price is right for your equity.` : `That's a call — see a flop and give up when you whiff.`)
+      : `That's a fold — not enough equity to stack off, and hero-calling here is the classic leak.`;
+    const depth = effA == null ? ""
+      : effA < 40 ? ` At ~${Math.round(effA)}bb you're short enough to be priced in, which widens your calls — that's why this is closer than it feels.`
+      : effA >= 150 ? ` At ~${Math.round(effA)}bb deep, stacking off has to be nutted; reverse-implied odds punish the second-best hand, so lean fold.`
+      : ` Around ${Math.round(effA)}bb this is the standard read — if they were shorter you'd call wider on price, deeper you'd fold more.`;
+    return `A ${P.name} ${isJam ? "shove" : "4-bet"} reps ${P.jamRange} — about the top ${rep}%. ${place}. ${verdict}${depth}`;
+  }
+  if (sc.stage === "vs3bet") {
+    const P = sc.aggP;
+    const lead = zone.a === "raise" ? `Top of the range — keep the pressure on with a 4-bet.`
+      : zone.a === "call" ? `${sc.hand.label} continues vs the 3-bet — strong enough to see a flop, not enough to stack off.`
+      : `Below the continue line — folding to the 3-bet loses the least.`;
     const effA = sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : null;
-    const depthNote = effA != null && effA < 35 ? ` Only ${Math.round(effA)}bb effective — calling is basically committing, so it's jam-or-fold territory.`
-      : effA != null && effA >= 250 ? ` ${Math.round(effA)}bb deep — live 4-bet pots this deep are aces-heavy; flat more in position, and fold pretty hands that play dominated.` : "";
-    const alt = (P.vs3.r >= 0.25 || P.vsRaise.r >= 0.25) ? `Consider: ${P.name} piles in light — continue wider and let them keep bluffing.`
-      : P.id === "nit" ? `Consider: a Nit's raise is the top of the deck — folding pretty hands here is discipline, not weakness.`
+    const depthNote = effA != null && effA < 35 ? ` Only ${Math.round(effA)}bb effective — calling is basically committing, so it's jam-or-fold.`
+      : effA != null && effA >= 250 ? ` ${Math.round(effA)}bb deep — flat more in position, fold pretty hands that play dominated.` : "";
+    const alt = (P.vs3.r >= 0.2 || P.vsRaise.r >= 0.25) ? `Consider: ${P.name} 3-bets light — continue wider and let them keep firing.`
+      : (P.id === "nit" || P.id === "station" || P.id === "reg") ? `Consider: a ${P.name}'s 3-bet is weighted to the top of the deck — folding pretty hands is discipline, not weakness.`
       : `Consider: most players under-bluff big preflop raises — when unsure, fold.`;
     return `${lead}${depthNote} ${alt}`;
   }
@@ -2189,7 +2235,7 @@ export default function App() {
 
   const act = (a) => {
     const post = POST_STAGES.includes(sc.stage);
-    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
+    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
     const pct = post ? sc.cls.rank : sc.hand.pct;
     const g = AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
     const cont = continuation(sc, a, bbv);
@@ -2260,7 +2306,7 @@ export default function App() {
   const openTrend = useMemo(() => (openLeak ? leakTrend(leakRecs, openLeak) : null), [openLeak, leakRecs]);
   const isPost = sc ? POST_STAGES.includes(sc.stage) : false;
   const scPct = sc ? (isPost ? sc.cls.rank : sc.hand.pct) : 0;
-  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, ...dynCtx(sc), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
+  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, ...dynCtx(sc), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
   const acts = sc
     ? (AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
       : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]
