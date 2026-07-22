@@ -7,8 +7,9 @@
 const fs = require("fs");
 const crypto = require("crypto");
 
-// Must match SB_URL in src/leak-lab.jsx — the only cross-origin endpoint.
-const SB_ORIGIN = "https://digcgqltrlmhgmzgmvwc.supabase.co";
+// Read from the same file the app imports, so the CSP can never drift from the
+// project the client actually calls (a mismatch would silently block all sync).
+const SB_ORIGIN = JSON.parse(fs.readFileSync("src/supabase-config.json", "utf8")).url;
 const RUNTIME_FILES = ["sw.js", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 const js = fs.readFileSync(".build/leak-lab.bundle.js", "utf8").replace(/<\/script>/g, "<\\/script>");

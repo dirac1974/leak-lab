@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { FONT_CSS } from "./fonts-gen.js";
 import { JAM_EQ } from "./data/jam-equity.js";
+import SB_CONFIG from "./supabase-config.json";
 
 /* ============ LEAK LAB — practical live-strategy trainer ============
    Real players, real spots: drill vs opponent archetypes, not a solver.
@@ -2140,8 +2141,10 @@ function leakTotals(recs) {
    Supabase Auth (GoTrue) and PostgREST — no dependencies. The publishable key
    is safe to embed (data is protected by row-level security). If SB_KEY is
    empty, all cloud features are hidden and the app is fully local. */
-const SB_URL = "https://digcgqltrlmhgmzgmvwc.supabase.co";
-const SB_KEY = "sb_publishable_c1BymCnX2uWjsjZ03Vck6Q_LWQLOClv"; // publishable client key (safe to embed; RLS protects data)
+// Project coordinates live in src/supabase-config.json — the same file build.js
+// reads for the CSP connect-src, so switching projects is a one-file change.
+const SB_URL = SB_CONFIG.url;
+const SB_KEY = SB_CONFIG.publishableKey; // publishable client key (safe to embed; RLS protects data)
 const CLOUD_ON = !!SB_KEY && typeof fetch === "function";
 const sbHeaders = (token) => ({ apikey: SB_KEY, "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) });
 async function sbSendMagicLink(email) {

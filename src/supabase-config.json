@@ -1,0 +1,5 @@
+{
+  "_comment": "Single source of truth for the Supabase project. Imported by src/leak-lab.jsx (client) AND read by build.js (CSP connect-src). Changing the project = editing this file only. The publishable key is safe to embed; row-level security protects the data.",
+  "url": "https://digcgqltrlmhgmzgmvwc.supabase.co",
+  "publishableKey": "sb_publishable_c1BymCnX2uWjsjZ03Vck6Q_LWQLOClv"
+}

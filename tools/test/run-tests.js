@@ -10,10 +10,10 @@ const tmp = path.join(__dirname, ".build");
 fs.mkdirSync(tmp, { recursive: true });
 
 // Build a CommonJS probe of the source with engine internals exported.
-fs.copyFileSync(path.join(root, "src", "leak-lab.jsx"), path.join(tmp, "src.jsx"));
-fs.copyFileSync(path.join(root, "src", "fonts-gen.js"), path.join(tmp, "fonts-gen.js"));
-fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
-fs.copyFileSync(path.join(root, "src", "data", "jam-equity.js"), path.join(tmp, "data", "jam-equity.js"));
+// Mirror the whole src/ tree so probe.jsx resolves every relative import the app
+// has (fonts, data tables, config) without this list needing maintenance.
+fs.cpSync(path.join(root, "src"), tmp, { recursive: true });
+fs.copyFileSync(path.join(tmp, "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
   "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP };\n");

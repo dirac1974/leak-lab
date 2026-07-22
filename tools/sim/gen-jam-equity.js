@@ -11,8 +11,8 @@ const esbuild = require("esbuild");
 const root = path.join(__dirname, "..", "..");
 const tmp = path.join(__dirname, ".build");
 fs.mkdirSync(tmp, { recursive: true });
-fs.copyFileSync(path.join(root, "src", "leak-lab.jsx"), path.join(tmp, "src.jsx"));
-fs.copyFileSync(path.join(root, "src", "fonts-gen.js"), path.join(tmp, "fonts-gen.js"));
+fs.cpSync(path.join(root, "src"), tmp, { recursive: true });
+fs.copyFileSync(path.join(tmp, "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 // Stub the data import — this generator produces it, so it can't depend on it.
 fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
 fs.writeFileSync(path.join(tmp, "data", "jam-equity.js"), "export const JAM_EQ = {};\n");
