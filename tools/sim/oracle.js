@@ -13,6 +13,8 @@ const tmp = path.join(__dirname, ".build");
 fs.mkdirSync(tmp, { recursive: true });
 fs.copyFileSync(path.join(root, "src", "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 fs.copyFileSync(path.join(root, "src", "fonts-gen.js"), path.join(tmp, "fonts-gen.js"));
+fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
+fs.copyFileSync(path.join(root, "src", "data", "jam-equity.js"), path.join(tmp, "data", "jam-equity.js"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
   "\nexport { zonesFor, mcEquity, PCT, RANKED, PROF, PROFILES, materialize };\n");

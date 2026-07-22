@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { FONT_CSS } from "./fonts-gen.js";
+import { JAM_EQ } from "./data/jam-equity.js";
 
 /* ============ LEAK LAB — practical live-strategy trainer ============
    Real players, real spots: drill vs opponent archetypes, not a solver.
@@ -414,13 +415,31 @@ function gradeSized(zones, pct, action, potBB, m = 6) {
    being on the wrong side of the call/fold line in a jam pot costs a big slice
    of the pot, so the MIX forgiveness that makes sense for a min-raise defence is
    wrong here (it was pricing a QQ-vs-nit-shove misclick at ~0.01bb). */
-function gradeStackoff(zones, pct, action, potBB) {
+/* Interpolate a hero hand's equity vs a profile's shove range (baked MC curve). */
+function jamEquity(id, pct) {
+  const c = JAM_EQ[id] || JAM_EQ.gto;
+  if (pct <= c[0][0]) return c[0][1];
+  for (let i = 1; i < c.length; i++) { if (pct <= c[i][0]) { const a = c[i - 1], b = c[i]; return a[1] + (b[1] - a[1]) * (pct - a[0]) / (b[0] - a[0]); } }
+  return c[c.length - 1][1];
+}
+function gradeStackoff(zones, pct, action, sc) {
+  const potBB = (sc && sc.potBB) || 20;
   const zone = zones.find((z) => pct >= z.from && pct < z.to) || zones[zones.length - 1];
   const norm = (x) => (typeof x === "string" && x.indexOf("raise") === 0 ? "raise" : x);
   if (norm(action) === norm(zone.a)) return { verdict: "best", ev: 0, best: zone.a, zones };
+  // vsJam: price the mistake from real equity vs the villain's shove range and
+  // the pot odds — EV loss = (pot after call) × how far the hand is from break-even.
+  if (sc && sc.stage === "vsJam" && sc.aggP && sc.jamCall != null) {
+    const call = sc.jamCall, needed = call / (potBB + call);
+    const edge = jamEquity(sc.aggP.id, pct) - needed; // + = calling is +EV
+    const heroGetsIn = norm(action) === "call" || norm(action) === "raise";
+    const loss = (heroGetsIn ? Math.max(0, -edge) : Math.max(0, edge)) * (potBB + call);
+    return { verdict: "miss", ev: +Math.max(0.3, Math.min(potBB, loss)).toFixed(2), best: zone.a, zones };
+  }
+  // vs4bet (not all-in): pot-scaled by distance past the boundary.
   const mine = zones.filter((z) => norm(z.a) === norm(action));
   let dist = 0; if (mine.length) { dist = 999; for (const z of mine) dist = Math.min(dist, pct < z.from ? z.from - pct : pct - z.to); if (dist === 999) dist = 0; }
-  const frac = Math.max(0.03, Math.min(0.5, 0.03 + dist * 0.02)); // deeper into the wrong region = costlier
+  const frac = Math.max(0.03, Math.min(0.5, 0.03 + dist * 0.02));
   return { verdict: "miss", ev: +((potBB || 20) * frac).toFixed(2), best: zone.a, zones };
 }
 /* Dollar amount hero must put in to call, for the preflop facing-a-bet stages. */
@@ -1393,7 +1412,7 @@ function OptionCosts({ sc, zones, pct, chosen, bbv }) {
     : sc.stage === "rfi" ? (sc.heroPos === "BB" && sc.limpers ? ["limp", ...openIds(sc.bbv || 2, sc.hu)] : ["fold", "limp", ...openIds(sc.bbv || 2, sc.hu)])
     : sc.stage === "vsOpen" ? ["fold", "call", "raiseS", "raiseB"]
     : ["fold", "call", "raise"];
-  const gradeOf = (a) => (sc.stage === "vsJam" || sc.stage === "vs4bet") ? gradeStackoff(zones, pct, a, sc.potBB) : AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB)
+  const gradeOf = (a) => (sc.stage === "vsJam" || sc.stage === "vs4bet") ? gradeStackoff(zones, pct, a, sc) : AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB)
     : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a)
     : grade(zones, pct, a, post ? 6 : undefined);
   const chipC = (a) => a === "fold" ? T.foldc : a === "check" ? ZC.check : a === "call" || a === "limp" ? T.diamond
@@ -2377,7 +2396,7 @@ export default function App() {
     const post = POST_STAGES.includes(sc.stage);
     const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
     const pct = post ? sc.cls.rank : sc.hand.pct;
-    const g = (sc.stage === "vsJam" || sc.stage === "vs4bet") ? gradeStackoff(zones, pct, a, sc.potBB) : AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
+    const g = (sc.stage === "vsJam" || sc.stage === "vs4bet") ? gradeStackoff(zones, pct, a, sc) : AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
     const cont = continuation(sc, a, bbv);
     const terminal = !cont.nextSc;
     const hEv = +(handEv + g.ev).toFixed(2);

@@ -12,6 +12,8 @@ fs.mkdirSync(tmp, { recursive: true });
 // Build a CommonJS probe of the source with engine internals exported.
 fs.copyFileSync(path.join(root, "src", "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 fs.copyFileSync(path.join(root, "src", "fonts-gen.js"), path.join(tmp, "fonts-gen.js"));
+fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
+fs.copyFileSync(path.join(root, "src", "data", "jam-equity.js"), path.join(tmp, "data", "jam-equity.js"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
   "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP };\n");
@@ -113,6 +115,12 @@ ok("QQ snap-calls a maniac shove at any depth", jamAt(MAN, 200, pct.QQ) === "cal
 const jc = (jr, eff) => M.zonesFor("vsJam", { jamRep: jr, effAgg: eff }).find((z) => z.a === "call").to;
 ok("tighter jammer -> tighter calls", jc(M.PROF.nit.jamRep, 100) < jc(M.PROF.tag.jamRep, 100) && jc(M.PROF.tag.jamRep, 100) < jc(MAN, 100));
 ok("shorter stack -> wider calls (priced in)", jc(NIT, 30) > jc(NIT, 100) && jc(NIT, 100) > jc(NIT, 200));
+// Finding 2: jam-pot mistakes priced at true bb (equity-based), not a percentile proxy.
+const scNit100 = { stage: "vsJam", aggP: M.PROF.nit, jamCall: 75, potBB: 128 };
+const zNit100 = M.zonesFor("vsJam", { jamRep: M.PROF.nit.jamRep, effAgg: 100 });
+ok("QQ-call-vs-nit priced at true EV (25-45bb, was ~7)", (() => { const e = M.gradeStackoff(zNit100, pct.QQ, "call", scNit100).ev; return e > 25 && e < 45; })());
+ok("KK-call-vs-nit @100bb grades best (0bb)", M.gradeStackoff(zNit100, pct.KK, "call", scNit100).ev === 0);
+ok("air-call-vs-nit priced near the cap", M.gradeStackoff(zNit100, 90, "call", scNit100).ev > 40);
 
 /* ---- 4. Metamorphic / directional invariants (Fable audit, Phase 0) ----
    These catch the motivating bug class: a swap to a tighter/looser villain, or a
