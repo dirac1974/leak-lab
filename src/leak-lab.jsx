@@ -1602,7 +1602,12 @@ function facingInfo(sc, bbv) {
   if (sc.stage === "vsOpen") { const ob = sc.openBB || OPEN(sc.hu, bv); return { p: sc.openerP, pos: sc.openerPos, verb: "OPENS", amt: ob, sub: `${ob.toFixed(1)}bb`, toCall: toCallBB(sc), potNow: sc.potBB }; }
   if (sc.stage === "vs3bet") { const t = threeBetBB(sc.openBB || OPEN(sc.hu, bv), "s"); return { p: sc.aggP, pos: sc.aggPos, verb: "3-BETS", amt: t, sub: `${t.toFixed(1)}bb`, toCall: toCallBB(sc), potNow: sc.potBB }; }
   if (sc.stage === "vs4bet") { const f4 = fourBetBB(threeBetBB(sc.openBB || OPEN(sc.hu, bv), "s")); return { p: sc.aggP, pos: sc.aggPos, verb: "4-BETS", amt: f4, sub: `${f4.toFixed(1)}bb`, toCall: toCallBB(sc), potNow: sc.potBB }; }
-  if (sc.stage === "vsJam") { const c = toCallBB(sc); return { p: sc.aggP, pos: sc.aggPos, verb: "JAMS", amt: c, sub: `${c.toFixed(1)}bb to call`, toCall: c, potNow: sc.potBB }; }
+  if (sc.stage === "vsJam") {
+    // Headline is their FULL shove; what hero owes sits in the TO CALL row below.
+    const c = toCallBB(sc);
+    const shove = Math.max(c, Math.min(sc.aggStk == null ? sc.S : sc.aggStk, sc.S));
+    return { p: sc.aggP, pos: sc.aggPos, verb: "JAMS", amt: shove, sub: `${shove.toFixed(1)}bb all-in`, toCall: c, potNow: sc.potBB };
+  }
   return null;
 }
 
