@@ -951,7 +951,9 @@ function genHand(cfg, table) {
     villains.push({ pos: posOf(s), p, seat: s, stk });
   }
   const roster = [];
-  for (let s = 0; s < N; s++) roster.push({ seat: s, pos: posOf(s), hero: s === table.heroSeat, profileId: s === table.heroSeat ? null : table.seats[s] });
+  // stk on the roster is presentation-only: it lets the table diagram keep showing
+  // stacks on seats that have already folded (villains drop their v postflop).
+  for (let s = 0; s < N; s++) { const rv = villains.find((v) => v.seat === s); roster.push({ seat: s, pos: posOf(s), hero: s === table.heroSeat, profileId: s === table.heroSeat ? null : table.seats[s], stk: rv ? rv.stk : null }); }
   const before = villains.filter((v) => ORDER[v.pos] < ORDER[heroPos]).sort((a, b) => ORDER[a.pos] - ORDER[b.pos]);
   const base = { hu, S, bbv, openBB: openBB0, mode: cfg.mode, rfiT: hu ? null : (RFIT[heroPos] != null ? RFIT[heroPos] : RFIT.SB * 0.9), btn, heroSeat: table.heroSeat, table: true, roster };
   let opener = null;
@@ -1495,16 +1497,20 @@ function TableView({ sc, onPeek }) {
   }
   const W = 320, H = 212, cx = W / 2, cy = H / 2, rx = W / 2 - 34, ry = H / 2 - 34;
   const seatXY = (i) => { const ang = Math.PI / 2 + (2 * Math.PI * i) / N; return [cx + rx * Math.cos(ang), cy + ry * Math.sin(ang)]; };
-  // Dealer button rides an inner ring in front of the seats — one persistent
-  // element that glides to the next seat each hand (see CSS transition), so the
-  // button visibly moves relative to you instead of teleporting.
-  const btnXY = (i) => { const ang = Math.PI / 2 + (2 * Math.PI * i) / N; return [cx + rx * 0.58 * Math.cos(ang), cy + ry * 0.58 * Math.sin(ang)]; };
+  // Dealer button rides just inside the seat ring; bet bubbles ride an inner ring
+  // between the seats and the pot — chips pushed toward the middle, like a real table.
+  const btnXY = (i) => { const ang = Math.PI / 2 + (2 * Math.PI * i) / N; return [cx + rx * 0.74 * Math.cos(ang), cy + ry * 0.74 * Math.sin(ang)]; };
+  const bubXY = (i) => { const ang = Math.PI / 2 + (2 * Math.PI * i) / N; return [cx + rx * 0.5 * Math.cos(ang), cy + ry * 0.5 * Math.sin(ang)]; };
   const [dbx, dby] = btnXY(((btn % N) + N) % N);
   // Live status by seat: the active villain(s) still in the hand vs folded.
   const bySeat = (v) => (v.seat != null ? v.seat : roster.findIndex((r) => r.pos === v.pos));
   const active = {}; (sc.villains || []).forEach((v) => { const s = bySeat(v); if (s >= 0) active[s] = v; });
   if (sc.vil) { const s = bySeat(sc.vil); if (s >= 0) active[s] = sc.vil; }
   const post = POST_STAGES.includes(sc.stage);
+  // "$45" out of "bets $45 (75%)" — the amount rides a chip bubble on the felt.
+  const betAmt = (act) => { if (!act || act === "folds") return null; const m = act.match(/\$[\d,.]+/); return m ? m[0] : null; };
+  const stkColor = (stk) => (stk < 45 ? T.heart : stk >= 200 ? T.club : T.dim);
+  const [hx, hy] = seatXY(((heroSeat % N) + N) % N);
   return (
     <div style={{ position: "relative", width: W, height: H, margin: "0 auto 6px" }}>
       <div style={{ position: "absolute", inset: "20px 24px", borderRadius: 96, background: "#12332A", border: `2px solid ${T.line}`, boxShadow: "inset 0 0 24px rgba(0,0,0,.4)" }} />
@@ -1518,18 +1524,31 @@ function TableView({ sc, onPeek }) {
         const prof = seat.profileId ? PROFILES.find((p) => p.id === seat.profileId) : (v && v.p) || null;
         // The seat the hero is currently deciding against reads brightest.
         const isAgg = !isHero && v && v.act && v.act !== "folds" && (sc.vil ? bySeat(sc.vil) === seat.seat : true);
+        const stk = v && v.stk != null ? v.stk : seat.stk;
+        // Folded seats collapse to dim pills but KEEP their stacks visible —
+        // table depth is a read you make on every hand, folded or not.
+        if (folded) return (
+          <div key={seat.seat} className={prof ? "ll-tap" : ""} onClick={!prof ? undefined : () => onPeek && onPeek({ name: prof.name, icon: prof.icon, desc: prof.desc })}
+            style={{ position: "absolute", left: x, top: y, transform: "translate(-50%,-50%)", textAlign: "center", zIndex: 1, opacity: 0.42 }}>
+            <div style={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, padding: "3px 9px" }}>
+              <div style={{ fontFamily: DISP, fontWeight: 700, fontSize: 10, letterSpacing: 0.5, color: T.bone, whiteSpace: "nowrap" }}>{(prof && prof.icon) || "·"} {seat.pos}</div>
+              {stk != null && <div style={{ fontFamily: MONO, fontSize: 10, lineHeight: 1.2, color: stkColor(stk) }}>{usd(stk * sc.bbv)}</div>}
+            </div>
+          </div>
+        );
         return (
           <div key={seat.seat} style={{ position: "absolute", left: x, top: y, transform: "translate(-50%,-50%)", textAlign: "center", width: 66, zIndex: isAgg ? 2 : 1 }}>
             <div className={isHero ? "" : "ll-tap"} onClick={isHero || !prof ? undefined : () => onPeek && onPeek({ name: prof.name, icon: prof.icon, desc: prof.desc })}
-              style={{ fontFamily: DISP, fontWeight: 700, fontSize: 16, lineHeight: 1, padding: "5px 3px", borderRadius: 9, opacity: folded ? 0.34 : 1,
+              style={{ fontFamily: DISP, fontWeight: 700, fontSize: 16, lineHeight: 1, padding: "5px 3px", borderRadius: 9,
                 background: isHero ? T.brass : stillIn ? "rgba(217,164,65,.16)" : T.panel,
-                color: isHero ? "#171309" : T.bone, border: `1.5px solid ${isHero ? T.brass : isAgg ? T.brass : stillIn ? "rgba(217,164,65,.5)" : T.line}` }}>
+                color: isHero ? "#171309" : T.bone, border: `${isAgg ? 2 : 1.5}px solid ${isHero ? T.brass : isAgg ? T.brass : stillIn ? "rgba(217,164,65,.5)" : T.line}`,
+                boxShadow: isAgg ? "0 0 14px rgba(217,164,65,.45)" : "none" }}>
               {isHero ? "YOU" : <span style={{ fontSize: 17 }}>{(prof && prof.icon) || "·"}</span>}
               <div style={{ fontFamily: DISP, fontWeight: 700, fontSize: 10.5, letterSpacing: 0.5, marginTop: 1, color: isHero ? "#171309" : T.bone }}>{seat.pos}</div>
-              {!isHero && v && v.stk != null && !folded && (
-                <div style={{ marginTop: 1, lineHeight: 1.05, color: v.stk < 45 ? T.heart : v.stk >= 200 ? T.club : T.dim }}>
-                  <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 600 }}>{usd(v.stk * sc.bbv)}</div>
-                  <div style={{ fontFamily: MONO, fontSize: 8.5, opacity: 0.75 }}>{Math.round(v.stk)}bb</div>
+              {!isHero && stk != null && (
+                <div style={{ marginTop: 1, lineHeight: 1.05, color: stkColor(stk) }}>
+                  <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 600 }}>{usd(stk * sc.bbv)}</div>
+                  <div style={{ fontFamily: MONO, fontSize: 8.5, opacity: 0.75 }}>{Math.round(stk)}bb</div>
                 </div>
               )}
               {isHero && sc.effBB != null && (
@@ -1539,15 +1558,30 @@ function TableView({ sc, onPeek }) {
                 </div>
               )}
             </div>
-            {v && v.act && v.act !== "folds" && <div style={{ fontFamily: MONO, fontSize: 10.5, fontWeight: isAgg ? 700 : 400, lineHeight: 1.15, color: isAgg ? T.brass : T.dim, marginTop: 3 }}>{v.act}</div>}
+            {v && v.act && v.act !== "folds" && <div style={{ fontFamily: MONO, fontSize: 10, fontWeight: isAgg ? 700 : 400, lineHeight: 1.15, color: isAgg ? T.brass : T.dim, marginTop: 3 }}>{betAmt(v.act) ? (v.act.replace(/\s*\$[\d,.]+/, "") || v.act) : v.act}</div>}
+          </div>
+        );
+      })}
+      {Object.entries(active).map(([s, v]) => {
+        const amt = betAmt(v.act);
+        if (!amt) return null;
+        const [bx, by] = bubXY(+s);
+        const isAgg = sc.vil ? bySeat(sc.vil) === +s : true;
+        return (
+          <div key={`bub-${s}`} style={{ position: "absolute", left: bx, top: by, transform: "translate(-50%,-50%)", zIndex: 3 }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#0D1310", border: `1.5px solid ${isAgg ? T.brass : T.line}`, borderRadius: 999, padding: "3px 9px", boxShadow: "0 2px 8px rgba(0,0,0,.5)" }}>
+              <span style={{ width: 10, height: 10, borderRadius: "50%", background: isAgg ? T.brass : T.dim, boxShadow: `0 0 0 2px #171309, 0 0 0 3px ${isAgg ? T.brass : T.dim}`, flexShrink: 0 }} />
+              <span style={{ fontFamily: DISP, fontWeight: 800, fontSize: 15, lineHeight: 1, color: T.bone }}>{amt}</span>
+            </div>
           </div>
         );
       })}
       <div style={{ position: "absolute", left: dbx, top: dby, transform: "translate(-50%,-50%)", transition: "left .24s ease, top .24s ease",
         width: 20, height: 20, borderRadius: 10, background: T.bone, color: "#171309", fontFamily: DISP, fontWeight: 800, fontSize: 12, lineHeight: "20px", textAlign: "center", border: "1.5px solid #0007", boxShadow: "0 1px 4px rgba(0,0,0,.55)", zIndex: 4 }}>D</div>
-      <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", textAlign: "center" }}>
-        <div style={{ fontFamily: MONO, fontSize: 14, fontWeight: 500, color: T.bone }}>{usd(sc.potBB * sc.bbv)}</div>
-        <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 8, letterSpacing: 1.5, color: T.dim }}>POT</div>
+      <div style={{ position: "absolute", left: hx, top: hy - 36, transform: "translate(-50%,-50%)", fontFamily: DISP, fontWeight: 700, fontSize: 9, letterSpacing: 2, color: T.brass, whiteSpace: "nowrap", zIndex: 3, textShadow: "0 1px 4px rgba(0,0,0,.7)" }}>▼ ACTION ON YOU</div>
+      <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", textAlign: "center", background: "rgba(12,21,18,.85)", border: `1px solid ${T.line}`, borderRadius: 10, padding: "3px 12px", zIndex: 2 }}>
+        <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 8, letterSpacing: 2, color: T.dim }}>POT</div>
+        <div style={{ fontFamily: MONO, fontSize: 19, fontWeight: 600, lineHeight: 1.15, color: T.bone }}>{usd(sc.potBB * sc.bbv)}</div>
       </div>
     </div>
   );
@@ -1555,6 +1589,22 @@ function TableView({ sc, onPeek }) {
 
 const FOCI = [["all", "All spots"], ["rfi", "Opens"], ["vsOpen", "Vs opens"], ["vs3bet", "Vs 3-bets"], ["cbet", "C-bet"], ["vsCbet", "Vs c-bet"], ["rivers", "Rivers"]];
 const STAGE_LABEL = { rfi: "OPENS", vsOpen: "VS OPENS", pressure: "VS 3-BETS+", cbet: "C-BET", vsCbet: "VS C-BET", rivers: "RIVERS" };
+
+/* What the hero is facing right now — feeds the Facing Banner (presentation only,
+   built from the same scenario state the grader and actionLabel already read).
+   Returns null when the hero is first to act (nothing to face). */
+function facingInfo(sc, bbv) {
+  const bv = sc.bbv || bbv || 2;
+  if (sc.stage === "vsCbet" || sc.stage === "vsBarrel" || sc.stage === "riverCall") {
+    const { b, allIn, frac } = betInfo(sc);
+    return { p: sc.vil.p, pos: sc.vil.pos, verb: allIn ? "ALL-IN" : sc.street === "flop" ? "C-BETS" : "BETS", amt: b, sub: `${b.toFixed(1)}bb · ${pctLbl(frac)} pot`, toCall: b, potNow: sc.potBB + b };
+  }
+  if (sc.stage === "vsOpen") { const ob = sc.openBB || OPEN(sc.hu, bv); return { p: sc.openerP, pos: sc.openerPos, verb: "OPENS", amt: ob, sub: `${ob.toFixed(1)}bb`, toCall: toCallBB(sc), potNow: sc.potBB }; }
+  if (sc.stage === "vs3bet") { const t = threeBetBB(sc.openBB || OPEN(sc.hu, bv), "s"); return { p: sc.aggP, pos: sc.aggPos, verb: "3-BETS", amt: t, sub: `${t.toFixed(1)}bb`, toCall: toCallBB(sc), potNow: sc.potBB }; }
+  if (sc.stage === "vs4bet") { const f4 = fourBetBB(threeBetBB(sc.openBB || OPEN(sc.hu, bv), "s")); return { p: sc.aggP, pos: sc.aggPos, verb: "4-BETS", amt: f4, sub: `${f4.toFixed(1)}bb`, toCall: toCallBB(sc), potNow: sc.potBB }; }
+  if (sc.stage === "vsJam") { const c = toCallBB(sc); return { p: sc.aggP, pos: sc.aggPos, verb: "JAMS", amt: c, sub: `${c.toFixed(1)}bb to call`, toCall: c, potNow: sc.potBB }; }
+  return null;
+}
 
 function actionLabel(stage, a, hu, sc, bbv) {
   const bv = (sc && sc.bbv) || bbv || 2;
@@ -2512,7 +2562,8 @@ export default function App() {
               <Stat k="ACCURACY" v={`${acc}%`} color={acc >= 80 ? T.club : acc >= 60 ? T.brass : T.heart} />
               {cfg.play === "hand"
                 ? <Stat k="RESULT vs EV" v={`${sess.realized >= 0 ? "+" : ""}${usd(sess.realized * bbv)}`} color={sess.realized >= 0 ? T.club : T.heart} />
-                : <Stat k={`EV LOST · ${sess.ev.toFixed(1)}bb`} v={usd(sess.ev * bbv)} color={sess.ev > 0 ? T.heart : T.dim} />}
+                : [<Stat key="ev" k={`EV LOST · ${sess.ev.toFixed(1)}bb`} v={usd(sess.ev * bbv)} color={sess.ev > 0 ? T.heart : T.dim} />,
+                   <Stat key="res" k="RESULT" v={`${sess.realized >= 0 ? "+" : ""}${usd(sess.realized * bbv)}`} color={sess.realized >= 0 ? T.club : T.heart} />]}
             </div>
 
             <div style={{ margin: "12px 0 4px" }}><TableView sc={sc} onPeek={setPeek} /></div>
@@ -2528,9 +2579,45 @@ export default function App() {
             )}
 
             <div style={{ textAlign: "center", margin: "16px 0 6px" }}>
-              <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.dim, marginBottom: 8 }}>
-                pot {usd(sc.potBB * bbv)} · {Math.round(sc.potBB * 10) / 10}bb — behind {usd((sc.effBB != null ? sc.effBB : sc.S) * bbv)} · {Math.round((sc.effBB != null ? sc.effBB : sc.S) * 10) / 10}bb
-              </div>
+              {(() => {
+                const f = facingInfo(sc, bbv);
+                const behind = sc.effBB != null ? sc.effBB : sc.S;
+                if (!f) return (
+                  <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.dim, marginBottom: 8 }}>
+                    pot {usd(sc.potBB * bbv)} · {Math.round(sc.potBB * 10) / 10}bb — behind {usd(behind * bbv)} · {Math.round(behind * 10) / 10}bb
+                  </div>
+                );
+                return (
+                  <div style={{ margin: "10px 0 12px", background: "rgba(217,164,65,.07)", border: `1.5px solid ${T.brass}`, borderRadius: 16, padding: "11px 14px", animation: "llRise .25s ease both" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 24, lineHeight: 1 }}>{f.p.icon}</span>
+                      <div style={{ textAlign: "left", minWidth: 0 }}>
+                        <div style={{ fontFamily: DISP, fontWeight: 700, fontSize: 16, letterSpacing: 1, lineHeight: 1.1, color: T.bone }}>{f.p.name.toUpperCase()} · {f.pos}</div>
+                        <div style={{ fontFamily: MONO, fontSize: 10, color: T.dim, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 150 }}>{f.p.desc}</div>
+                      </div>
+                      <div style={{ marginLeft: "auto", textAlign: "right", flexShrink: 0 }}>
+                        <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 11, letterSpacing: 2.5, color: T.brass }}>{f.verb}</div>
+                        <div style={{ fontFamily: DISP, fontWeight: 800, fontSize: 38, lineHeight: 1, color: T.brass }}>{usd(chipBB(f.amt, bbv) * bbv)}</div>
+                        <div style={{ fontFamily: MONO, fontSize: 10.5, color: T.dim, marginTop: 2, whiteSpace: "nowrap" }}>{f.sub}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", marginTop: 9, paddingTop: 9, borderTop: "1px solid rgba(217,164,65,.25)" }}>
+                      <div style={{ flex: 1, textAlign: "center" }}>
+                        <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 9, letterSpacing: 2, color: T.dim }}>TO CALL</div>
+                        <div style={{ fontFamily: MONO, fontSize: 18, fontWeight: 600, color: T.bone, marginTop: 2 }}>{usd(chipBB(f.toCall, bbv) * bbv)}</div>
+                      </div>
+                      <div style={{ flex: 1, textAlign: "center", borderLeft: `1px solid ${T.line}` }}>
+                        <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 9, letterSpacing: 2, color: T.dim }}>POT NOW</div>
+                        <div style={{ fontFamily: MONO, fontSize: 18, fontWeight: 600, color: T.bone, marginTop: 2 }}>{usd(f.potNow * bbv)}</div>
+                      </div>
+                      <div style={{ flex: 1, textAlign: "center", borderLeft: `1px solid ${T.line}` }}>
+                        <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 9, letterSpacing: 2, color: T.dim }}>BEHIND</div>
+                        <div style={{ fontFamily: MONO, fontSize: 18, fontWeight: 600, color: T.bone, marginTop: 2 }}>{usd(behind * bbv)}</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
               {sc.pre && !fb && <div style={{ fontFamily: MONO, fontSize: 11, color: T.brass, marginBottom: 6 }}>{sc.pre}</div>}
               <div style={{ fontSize: 14, color: T.dim, marginBottom: 14 }}>{contextLine(sc)}</div>
               {isPost && (
