@@ -165,22 +165,47 @@ function foldBoundary(stage, ctx) {
 }
 
 /* ---------------- Ranges (approx. GTO, 100bb) ---------------- */
-const TABLES = {
-  "9max": { pos: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"], rfi: { UTG: 10, "UTG+1": 11, "UTG+2": 13, LJ: 15, HJ: 19, CO: 26, BTN: 44, SB: 40 } },
-  "6max": { pos: ["UTG", "HJ", "CO", "BTN", "SB", "BB"], rfi: { UTG: 16, HJ: 21, CO: 27, BTN: 45, SB: 42 } },
+/* Positions for any ring size 5–10 are generated from the seat count; RFI comes
+   from how many players are left to act behind you — which is why UTG at
+   10-handed opens tighter than UTG at 6-handed. The 6-max and 9-max RFI rows are
+   the existing hand-tuned, Stats-signed values and are kept verbatim (unchanged).
+   The other sizes use the behind-anchored RFI_BY_BEHIND curve (ported from the
+   cloud session, 2026-07-22); those rows are NOT yet Stats-signed and need a
+   walk-forward validation reference before being treated as calibrated. */
+const EP_NAMES = {
+  5: ["UTG", "CO"], 6: ["UTG", "HJ", "CO"], 7: ["UTG", "LJ", "HJ", "CO"],
+  8: ["UTG", "UTG+1", "LJ", "HJ", "CO"], 9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"],
+  10: ["UTG", "UTG+1", "UTG+2", "UTG+3", "LJ", "HJ", "CO"],
 };
-const ORDER = { UTG: 0, "UTG+1": 1, "UTG+2": 2, LJ: 3, HJ: 4, CO: 5, BTN: 6, SB: 7, BB: 8 };
-/* Seat position by clockwise offset from the button (for full-hand mode). */
-const POS_BY_OFFSET = {
-  "9max": ["BTN", "SB", "BB", "UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"],
-  "6max": ["BTN", "SB", "BB", "UTG", "HJ", "CO"],
+const RFI_BY_BEHIND = { 2: 44, 3: 26, 4: 19, 5: 15, 6: 13, 7: 11.5, 8: 10.5, 9: 9.5 };
+const RFI_TUNED = {
+  "9max": { UTG: 10, "UTG+1": 11, "UTG+2": 13, LJ: 15, HJ: 19, CO: 26, BTN: 44, SB: 40 },
+  "6max": { UTG: 16, HJ: 21, CO: 27, BTN: 45, SB: 42 },
 };
+const TABLES = {}, POS_BY_OFFSET = {};
+for (let N = 5; N <= 10; N++) {
+  const key = `${N}max`;
+  const pos = [...EP_NAMES[N], "BTN", "SB", "BB"];
+  let rfi = RFI_TUNED[key];
+  if (!rfi) { rfi = {}; pos.forEach((p, i) => { if (p === "BB") return; rfi[p] = p === "SB" ? 40 : (RFI_BY_BEHIND[N - 1 - i] || 9.5); }); }
+  TABLES[key] = { pos, rfi };
+  /* Seat position by clockwise offset from the button (for full-hand mode). */
+  POS_BY_OFFSET[key] = ["BTN", "SB", "BB", ...EP_NAMES[N]];
+}
+const ORDER = { UTG: 0, "UTG+1": 1, "UTG+2": 2, "UTG+3": 3, LJ: 4, HJ: 5, CO: 6, BTN: 7, SB: 8, BB: 9 };
 const HU_OPEN = 82;
 
 function defendChart(openerPos, heroPos, hu, mode) {
   if (hu) return { r: 12, c: 62 };
   if (openerPos === "SB") return { r: 13, c: 55 };
-  const tier = mode === "9max" && ORDER[openerPos] <= 2 ? "ep" : openerPos === "CO" ? "co" : openerPos === "BTN" ? "btn" : "mp";
+  /* Tier by how many seats act behind the opener: EP opens are the tightest and
+     defend narrowest. Behind-based so it generalizes to every ring size — and it
+     reproduces the old 6-max/9-max behaviour exactly (UTG/UTG+1/UTG+2 = ep in
+     9-max; everything but CO/BTN = mp in 6-max). */
+  const posArr = (TABLES[mode] || TABLES["9max"]).pos;
+  const oi = posArr.indexOf(openerPos);
+  const behind = oi >= 0 ? posArr.length - 1 - oi : 4;
+  const tier = openerPos === "BTN" ? "btn" : openerPos === "CO" ? "co" : behind >= 6 ? "ep" : "mp";
   const C = {
     ep: { BB: { r: 4, c: 20 }, SB: { r: 3.5, c: 7 }, o: { r: 3.5, c: 10 } },
     mp: { BB: { r: 5, c: 24 }, SB: { r: 4.5, c: 8 }, o: { r: 4, c: 12 } },
@@ -871,7 +896,7 @@ function genScenario(cfg, filter, tries = 0) {
     if (opensHere(v, HU_OPEN)) return vsOpenSc();
     return tries < 30 ? genScenario(cfg, filter, tries + 1) : rfiSc();
   }
-  // ring game (9-max or 6-max)
+  // ring game (5- to 10-max)
   const { pos: POSN, rfi: RFIT } = TABLES[cfg.mode];
   const nSeats = POSN.length;
   let heroIdx;
@@ -880,7 +905,7 @@ function genScenario(cfg, filter, tries = 0) {
   else heroIdx = (Math.random() * nSeats) | 0;
   const heroPos = POSN[heroIdx];
   const others = POSN.filter((p) => p !== heroPos);
-  const villains = others.map((pos, i) => { const p = PROF[cfg.seats[i]]; return { pos, p, stk: vilStk(p, S, bbv) }; });
+  const villains = others.map((pos, i) => { const p = PROF[cfg.seats[i % cfg.seats.length]]; return { pos, p, stk: vilStk(p, S, bbv) }; });
   const before = villains.filter((v) => ORDER[v.pos] < ORDER[heroPos]);
   const after = villains.filter((v) => ORDER[v.pos] > ORDER[heroPos]);
   const base = { hu, S, bbv, openBB, mode: cfg.mode, rfiT: RFIT[heroPos] };
@@ -1002,13 +1027,13 @@ function genPostDrill(cfg, filter) {
     if (asAggro) {
       const openable = POSN.slice(0, -1);
       heroPos = openable[(Math.random() * openable.length) | 0];
-      villains = POSN.filter((p) => p !== heroPos).map((pos, i) => { const p = PROF[cfg.seats[i]]; return { pos, p, stk: vilStk(p, S, bbv) }; });
+      villains = POSN.filter((p) => p !== heroPos).map((pos, i) => { const p = PROF[cfg.seats[i % cfg.seats.length]]; return { pos, p, stk: vilStk(p, S, bbv) }; });
       const later = villains.filter((v) => ORDER[v.pos] > ORDER[heroPos]);
       vil = later[(Math.random() * later.length) | 0];
     } else {
       const heroIdx = 1 + ((Math.random() * (POSN.length - 1)) | 0);
       heroPos = POSN[heroIdx];
-      villains = POSN.filter((p) => p !== heroPos).map((pos, i) => { const p = PROF[cfg.seats[i]]; return { pos, p, stk: vilStk(p, S, bbv) }; });
+      villains = POSN.filter((p) => p !== heroPos).map((pos, i) => { const p = PROF[cfg.seats[i % cfg.seats.length]]; return { pos, p, stk: vilStk(p, S, bbv) }; });
       const bef = villains.filter((v) => ORDER[v.pos] < ORDER[heroPos]);
       vil = bef[(Math.random() * bef.length) | 0];
     }
@@ -2333,7 +2358,7 @@ function LeakChart({ tr, height = 168 }) {
 
 export default function App() {
   const [view, setView] = useState("setup");
-  const [cfg, setCfg] = useState({ mode: "9max", hu: "tag", seats: ["nit", "reg", "lag", "station", "maniac", "tag", "station", "nit"], stake: 0, stack: 2, image: "unknown", play: "drill" });
+  const [cfg, setCfg] = useState({ mode: "9max", hu: "tag", seats: ["nit", "reg", "lag", "station", "maniac", "tag", "station", "nit", "reg"], stake: 0, stack: 2, image: "unknown", play: "drill" });
   const [filter, setFilter] = useState("all");
   const [sess, setSess] = useState({ n: 0, good: 0, ev: 0, leaks: {}, byStage: {}, aggr: 0, pass: 0, foldn: 0, realized: 0, hands: 0 });
   const [sc, setSc] = useState(null);
@@ -2549,7 +2574,7 @@ export default function App() {
             <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 10, letterSpacing: 2.5, color: T.dim }}>LIVE STRATEGY · REAL PLAYERS, REAL SPOTS</div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-            <div style={{ fontFamily: MONO, fontSize: 10, color: T.dim }}>{STAKES[cfg.stake].label} · {stackBB}bb · {cfg.mode === "hu" ? "HU" : cfg.mode === "9max" ? "9-MAX" : "6-MAX"}</div>
+            <div style={{ fontFamily: MONO, fontSize: 10, color: T.dim }}>{STAKES[cfg.stake].label} · {stackBB}bb · {cfg.mode === "hu" ? "HU" : `${parseInt(cfg.mode)}-MAX`}</div>
             <span className="ll-tap" onClick={() => setView("progress")} style={{ fontFamily: MONO, fontSize: 10, color: profile ? T.club : T.dim, border: `1px solid ${profile ? T.club : T.line}`, borderRadius: 999, padding: "2px 9px" }}>
               {CLOUD_ON && cloud ? `● ${cloud.email.split("@")[0]}` : profile ? `● ${profile}` : "○ guest"}
             </span>
@@ -3016,10 +3041,11 @@ export default function App() {
                 : "Fast reps of a chosen decision type. Use the focus filters to target a leak."}
             </div>
 
-            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>TABLE</div>
+            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>TABLE · players dealt in</div>
             <div style={{ display: "flex", gap: 4, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, padding: 4 }}>
-              {seg("9-max", cfg.mode === "9max", () => setCfg({ ...cfg, mode: "9max" }), "9m")}
-              {seg("6-max", cfg.mode === "6max", () => setCfg({ ...cfg, mode: "6max" }), "6m")}
+              {[10, 9, 8, 7, 6, 5].map((n) => seg(String(n), cfg.mode === `${n}max`, () => setCfg({ ...cfg, mode: `${n}max` }), `${n}m`))}
+            </div>
+            <div style={{ display: "flex", gap: 4, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, padding: 4, marginTop: 6 }}>
               {seg("Heads-up", cfg.mode === "hu", () => setCfg({ ...cfg, mode: "hu" }), "hu")}
             </div>
 
@@ -3090,7 +3116,7 @@ export default function App() {
               </div>
             ) : (
               <div>
-                {cfg.seats.slice(0, cfg.mode === "9max" ? 8 : 5).map((id, i) => {
+                {cfg.seats.slice(0, (parseInt(cfg.mode) || 6) - 1).map((id, i) => {
                   const p = PROF[id];
                   return (
                     <div key={i} className="ll-tap"
