@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { FONT_CSS } from "./fonts-gen.js";
 import { JAM_EQ } from "./data/jam-equity.js";
+import { EQUITY_CACHE } from "./data/equity-cache.js";
 import SB_CONFIG from "./supabase-config.json";
 
 /* ============ LEAK LAB — practical live-strategy trainer ============
@@ -125,7 +126,45 @@ function mcEquity(heroCards, board, rangePct, iters) {
     if (hs > vs) win++; else if (hs === vs) tie++;
     n++;
   }
-  return n ? { equity: (win + tie / 2) / n, iters: n } : null;
+  return n ? { equity: (win + tie / 2) / n, iters: n, wins: win, ties: tie, n } : null;
+}
+/* ---------------- Board-specific equity cache (crowd-pooled) ----------------
+   equityKey collapses strategically-identical spots into one canonical string so
+   samples pool across users: equity is invariant under any consistent relabeling
+   of the four suits (our ranges are suit-symmetric 169-classes) and under
+   reordering within the hero cards or within the board. We take the
+   lexicographically smallest label over all 24 suit permutations — a true
+   canonical form, independent of the order cards arrived in. EQUITY_MODEL_V bumps
+   whenever a profile's shove range changes, so stale samples are ignored. */
+const EQUITY_MODEL_V = 1;
+/* Grading stays on the baked preflop curve until pooled board equities are
+   validated and Stats-signed; flipping this true is a deliberate, gated change. */
+const EQUITY_CACHE_LIVE = false;
+const SUIT_PERMS = (() => {
+  const out = [], base = ["s", "h", "d", "c"];
+  const rec = (rem, acc) => { if (!rem.length) { out.push(acc); return; } for (let i = 0; i < rem.length; i++) rec([...rem.slice(0, i), ...rem.slice(i + 1)], [...acc, rem[i]]); };
+  rec(base, []);
+  return out;
+})();
+/* Street is derived from board length (not trusted from caller state) so a
+   submitted sample and a later lookup always produce the identical key. */
+const streetOf = (b) => (b && b.length >= 5 ? "river" : b && b.length === 4 ? "turn" : b && b.length === 3 ? "flop" : "preflop");
+function equityKey(profId, heroCards, board) {
+  const bd = board || [];
+  let best = null;
+  for (const perm of SUIT_PERMS) {
+    const map = { s: perm[0], h: perm[1], d: perm[2], c: perm[3] };
+    const enc = (c) => RC[c.r] + map[c.s];
+    const label = heroCards.map(enc).sort().join("") + "/" + bd.map(enc).sort().join("");
+    if (best === null || label < best) best = label;
+  }
+  return `${EQUITY_MODEL_V}|${profId}|${streetOf(bd)}|${best}`;
+}
+/* Look up a confirmed pooled equity for this exact board spot; null on miss. */
+function boardEquity(profId, heroCards, board) {
+  if (!heroCards || heroCards.length < 2) return null;
+  const hit = EQUITY_CACHE[equityKey(profId, heroCards, board)];
+  return hit == null ? null : hit;
 }
 
 function sampleFromTop(t) {
@@ -441,8 +480,15 @@ function gradeSized(zones, pct, action, potBB, m = 6) {
    being on the wrong side of the call/fold line in a jam pot costs a big slice
    of the pot, so the MIX forgiveness that makes sense for a min-raise defence is
    wrong here (it was pricing a QQ-vs-nit-shove misclick at ~0.01bb). */
-/* Interpolate a hero hand's equity vs a profile's shove range (baked MC curve). */
-function jamEquity(id, pct) {
+/* Interpolate a hero hand's equity vs a profile's shove range (baked MC curve).
+   When the board cache is live, a confirmed board-specific equity for the exact
+   spot wins over the preflop curve — that is the accuracy the pool adds. Shadow
+   until EQUITY_CACHE_LIVE flips, so this is a no-op on an empty cache today. */
+function jamEquity(id, pct, sc) {
+  if (EQUITY_CACHE_LIVE && sc && sc.hand && sc.board && sc.board.length >= 3) {
+    const be = boardEquity(id, sc.hand.cards, sc.board);
+    if (be != null) return be;
+  }
   const c = JAM_EQ[id] || JAM_EQ.gto;
   if (pct <= c[0][0]) return c[0][1];
   for (let i = 1; i < c.length; i++) { if (pct <= c[i][0]) { const a = c[i - 1], b = c[i]; return a[1] + (b[1] - a[1]) * (pct - a[0]) / (b[0] - a[0]); } }
@@ -457,7 +503,7 @@ function gradeStackoff(zones, pct, action, sc) {
   // the pot odds — EV loss = (pot after call) × how far the hand is from break-even.
   if (sc && sc.stage === "vsJam" && sc.aggP && sc.jamCall != null) {
     const call = sc.jamCall, needed = call / (potBB + call);
-    const edge = jamEquity(sc.aggP.id, pct) - needed; // + = calling is +EV
+    const edge = jamEquity(sc.aggP.id, pct, sc) - needed; // + = calling is +EV
     const heroGetsIn = norm(action) === "call" || norm(action) === "raise";
     const loss = (heroGetsIn ? Math.max(0, -edge) : Math.max(0, edge)) * (potBB + call);
     return { verdict: "miss", ev: +Math.max(0.3, Math.min(potBB, loss)).toFixed(2), best: zone.a, zones };
@@ -2226,6 +2272,20 @@ function sbTrack(ev) {
     fetch(`${SB_URL}/rest/v1/ll_events`, { method: "POST", headers: { ...sbHeaders(), Prefer: "return=minimal" }, body: JSON.stringify({ ev, sid }) }).catch(() => {});
   } catch (e) {}
 }
+/* Contribute a board-equity sample to the shared pool. Anonymous, fire-and-forget,
+   insert-only (the embedded key can write samples but never read the firehose,
+   same posture as telemetry). Raw win/tie/n tallies pool by summation; a
+   service-role aggregator turns them into a confirmed curve. Only flop+ spots —
+   that is where the baked preflop curve is blind and the pool adds real signal. */
+function sbSubmitEquity(profId, heroCards, board, r) {
+  if (!CLOUD_ON || !r || !board || board.length < 3) return;
+  try {
+    let sid = store.get("ll_sid", null);
+    if (!sid) { sid = Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12); store.set("ll_sid", sid); }
+    const body = { k: equityKey(profId, heroCards, board), rv: EQUITY_MODEL_V, wins: r.wins, ties: r.ties, n: r.n, sid };
+    fetch(`${SB_URL}/rest/v1/ll_equity_samples`, { method: "POST", headers: { ...sbHeaders(), Prefer: "return=minimal" }, body: JSON.stringify(body) }).catch(() => {});
+  } catch (e) {}
+}
 
 /* Tiny dependency-free SVG line chart for the progress view. */
 function LineChart({ series, height = 150, yLabel, fmtY }) {
@@ -2387,6 +2447,8 @@ export default function App() {
       const needed = call / (potBefore + call);
       const evCall = eq.equity * potBefore - (1 - eq.equity) * call; // hero net bb by calling
       setMc({ equity: eq.equity, needed, evCall });
+      // Feed the shared pool: a real board run is signal the baked curve lacks.
+      sbSubmitEquity(sc.aggP.id, sc.hand.cards, sc.board || [], eq);
     }, 30);
   };
   const [cloud, setCloud] = useState(null); // { at, rt, email }

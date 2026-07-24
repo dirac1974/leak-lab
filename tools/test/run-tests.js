@@ -16,7 +16,7 @@ fs.cpSync(path.join(root, "src"), tmp, { recursive: true });
 fs.copyFileSync(path.join(tmp, "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
-  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP };\n");
+  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, mcEquity, jamEquity, EQUITY_MODEL_V };\n");
 esbuild.buildSync({
   entryPoints: [path.join(tmp, "probe.jsx")], bundle: true, format: "cjs",
   jsx: "automatic", loader: { ".jsx": "jsx" }, external: ["react", "react/jsx-runtime"],
@@ -183,6 +183,52 @@ for (const [name, stage, ctx] of ADVICE_CTX) {
   }
 }
 ok(`coach-note consistency scanned ${advChecked} advice strings`, advChecked > 200);
+
+/* ---- 6. Board-equity cache: canonical key + shadow-mode grading no-op ----
+   The pool only works if strategically-identical spots collapse to one key, and
+   the accuracy plumbing must NOT touch a single grade until it's Stats-signed. */
+const C = (r, s) => ({ r, s });
+// A concrete spot: hero AsKh, flop Qs Jd 2c.
+const hero = [C(14, "s"), C(13, "h")], board = [C(12, "s"), C(11, "d"), C(2, "c")];
+const k0 = M.equityKey("nit", hero, board);
+// (a) invariant under a consistent suit relabeling of hero + board together
+const relabel = (m) => (c) => C(c.r, m[c.s]);
+const swap = { s: "h", h: "s", d: "c", c: "d" };
+ok("equityKey invariant under suit relabel", M.equityKey("nit", hero.map(relabel(swap)), board.map(relabel(swap))) === k0);
+// (b) invariant under reordering within hero and within board
+ok("equityKey invariant under hero/board reorder", M.equityKey("nit", [hero[1], hero[0]], [board[2], board[0], board[1]]) === k0);
+// (c) a full rotation of all four suits is still the same spot
+const rot = { s: "h", h: "d", d: "c", c: "s" };
+ok("equityKey invariant under 4-suit rotation", M.equityKey("nit", hero.map(relabel(rot)), board.map(relabel(rot))) === k0);
+// (d) genuinely different spots must NOT collapse: suit CONNECTIVITY differs when
+//     hero's two cards share the board's flush suit vs not.
+const heroFd = [C(14, "s"), C(13, "s")]; // both spades — flush draw with Qs
+ok("equityKey separates flush-relevant suit patterns", M.equityKey("nit", heroFd, board) !== M.equityKey("nit", hero, board));
+// (e) different profile and different street key apart
+ok("equityKey separates profile", M.equityKey("lag", hero, board) !== k0);
+ok("equityKey separates street (turn adds a card)", M.equityKey("nit", hero, [...board, C(9, "h")]) !== k0);
+// (f) format: version | profile | street(derived) | canonical label
+ok("equityKey format + derived street", /^1\|nit\|flop\|/.test(k0), k0);
+ok("equityKey derives preflop when board empty", /^1\|nit\|preflop\|/.test(M.equityKey("nit", hero, [])));
+ok("EQUITY_MODEL_V is 1", M.EQUITY_MODEL_V === 1);
+// boardEquity: empty baked cache always misses
+ok("boardEquity miss returns null", M.boardEquity("nit", hero, board) === null);
+ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) === null);
+// SHADOW no-op: with the cache off, passing a board must not move any grade.
+{ const scNoBd = { stage: "vsJam", aggP: M.PROF.nit, jamCall: 75, potBB: 128 };
+  const scBd = { ...scNoBd, hand: { cards: hero }, board };
+  const z = M.zonesFor("vsJam", { jamRep: M.PROF.nit.jamRep, effAgg: 100 });
+  for (const p of [0.23, 1.13, 40, 90]) {
+    ok(`shadow: board does not change grade @pct ${p}`, M.gradeStackoff(z, p, "call", scBd).ev === M.gradeStackoff(z, p, "call", scNoBd).ev);
+  }
+  ok("shadow: jamEquity(sc) == jamEquity() with cache off", M.jamEquity("nit", 1.13, scBd) === M.jamEquity("nit", 1.13));
+}
+// mcEquity returns raw tallies consistent with the equity it reports.
+{ const e = M.mcEquity(hero, board, M.PROF.nit.jamRep, 800);
+  ok("mcEquity returns tallies", e && typeof e.wins === "number" && typeof e.ties === "number" && e.n > 0);
+  ok("mcEquity tallies match equity", e && Math.abs((e.wins + e.ties / 2) / e.n - e.equity) < 1e-9);
+  ok("mcEquity equity in [0,1]", e && e.equity >= 0 && e.equity <= 1 && e.wins + e.ties <= e.n);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
