@@ -1,0 +1,56 @@
+# Nightly equity aggregation: pool crowd samples -> authoritative recompute ->
+# confirmed ll_equity_cache rows -> bake confirmed equities into the client's
+# src/data/equity-cache.js. If the baked file changed, commit it — that push
+# triggers the normal Pages deploy (which re-runs the full test suite), so fresh
+# equities ship with zero manual steps.
+#
+# Requires the SUPABASE_SERVICE_ROLE_KEY repository secret (Settings → Secrets →
+# Actions). Until it exists the aggregation soft-skips: the run stays green and
+# simply does nothing, so enabling the pipeline is just adding the secret.
+# Actions are SHA-pinned to the same revisions as pages.yml.
+name: Aggregate equity pool
+
+on:
+  schedule:
+    - cron: "17 9 * * *" # daily, 09:17 UTC (~2:17am PT) — off the :00 rush
+  workflow_dispatch:
+
+permissions:
+  contents: write # commits the regenerated src/data/equity-cache.js
+
+concurrency:
+  group: aggregate-equity
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Aggregate samples into confirmed cache rows
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "SUPABASE_SERVICE_ROLE_KEY secret not set — skipping aggregation (add it to enable the pipeline)."
+            exit 0
+          fi
+          npm run sim:aggregate
+      - name: Bake confirmed equities into the client
+        run: npm run bake:equity
+      - name: Commit the baked cache if it changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/data/equity-cache.js
+          if git diff --cached --quiet; then
+            echo "No new confirmed equities — nothing to commit."
+          else
+            git commit -m "Bake confirmed equities from the nightly aggregation run"
+            git push
+          fi

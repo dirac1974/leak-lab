@@ -92,7 +92,13 @@ SUPABASE_SERVICE_ROLE_KEY=... npm run sim:aggregate
 node tools/sim/aggregate-equity.js --self-test
 ```
 
-Schedule it (GitHub Actions cron or Supabase scheduled job).
+It is already scheduled: `.github/workflows/aggregate-equity.yml` runs nightly
+(and on manual dispatch), aggregates, bakes, and commits the regenerated
+`src/data/equity-cache.js` — which triggers the normal deploy. **To enable it,
+add the `SUPABASE_SERVICE_ROLE_KEY` repository secret** (GitHub → Settings →
+Secrets and variables → Actions; the key is in the Supabase dashboard under
+Settings → API). Until the secret exists the nightly run soft-skips and stays
+green.
 
 ### Getting confirmed equities to the client
 
