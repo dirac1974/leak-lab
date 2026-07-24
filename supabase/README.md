@@ -82,9 +82,29 @@ SUPABASE_SERVICE_ROLE_KEY=... npm run sim:aggregate
 node tools/sim/aggregate-equity.js --self-test
 ```
 
-Schedule it (GitHub Actions cron or Supabase scheduled job). Going live on grading
-is still gated separately: flip `EQUITY_CACHE_LIVE` in `src/leak-lab.jsx` only after
-a walk-forward validation reference and a Stats sign-off.
+Schedule it (GitHub Actions cron or Supabase scheduled job).
+
+### Getting confirmed equities to the client
+
+The client reads the **baked** `src/data/equity-cache.js` (like `JAM_EQ`), not the
+DB, so confirmed rows reach users only through a bake step:
+
+```bash
+npm run bake:equity   # fetch confirmed ll_equity_cache rows -> src/data/equity-cache.js
+```
+
+Confirmed rows are anon-readable (RLS), so this uses the publishable key — no
+secret. The full **go-live sequence** (each step gated on the previous):
+
+1. Real usage accumulates samples in `ll_equity_samples` (flop+ "run the math").
+2. `npm run sim:aggregate` — confirm authoritative equities into `ll_equity_cache`.
+3. `npm run bake:equity` — bake confirmed rows into `src/data/equity-cache.js`.
+4. **Only then** flip `EQUITY_CACHE_LIVE = true` in `src/leak-lab.jsx`, with a
+   walk-forward validation reference + a Stats sign-off note (per project rules).
+5. `npm run build`, commit, deploy.
+
+Until step 4, the whole path runs in shadow: samples pool and equities bake, but
+`boardEquity()` never touches a grade.
 
 ## Notes
 

@@ -9,6 +9,7 @@
     "sim:test": "node tools/sim/test-evaluator.js",
     "sim:oracle": "node tools/sim/oracle.js",
     "sim:aggregate": "node tools/sim/aggregate-equity.js",
+    "bake:equity": "node tools/sim/bake-equity-cache.js",
     "serve": "npx --yes http-server -p 8080 -c-1 ."
   },
   "devDependencies": {
