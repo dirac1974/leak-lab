@@ -57,6 +57,10 @@ const SPOTS = [
   ["vsRaise wet shallow", "vsRaise", { tb: "wet", spr: 2 }],
   ["vsRaise all-in", "vsRaise", { tb: "ahi", spr: 5, allIn: true }],
   ["vsRaise vs maniac raiser", "vsRaise", { tb: "ahi", spr: 5, raiseF: 0.3 }],
+  ["donk vs aggressor ahi", "donk", { tb: "ahi", spr: 4, street: "flop" }],
+  ["donk vs aggressor low", "donk", { tb: "low", spr: 4, street: "flop" }],
+  ["donk probe after give-up", "donk", { tb: "ahi", spr: 4, street: "turn", gaveUp: true }],
+  ["donk probe wet 3way", "donk", { tb: "wet", spr: 4, street: "turn", gaveUp: true, mw: 3 }],
 ];
 const round2 = (x) => (typeof x === "number" ? Math.round(x * 100) / 100 : x);
 const snap = {};
@@ -376,6 +380,48 @@ ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) ==
   ok(`full-hand walk: ${hands} hands, no crashes`, crashed === 0, `${crashed} crashed`);
   ok("full-hand walk: no dead-ends", deadEnds === 0, `${deadEnds}`);
   ok("full-hand walk: all hands terminate", unterminated === 0, `${unterminated}`);
+}
+
+/* ---- 11. OOP first-action (donk/probe) + no more collapsed streets ----
+   The reported hand: AK UTG+1 calls a BTN 3-bet, flop — hero acts FIRST (check or
+   lead), and calling a flop c-bet must lead to a turn decision, never straight to
+   the next hand. */
+{
+  const zD = (ctx) => M.zonesFor("donk", ctx);
+  ok("donk vs aggressor on A-high: pure check", JSON.stringify(zD({ tb: "ahi", spr: 4, street: "flop" })) === JSON.stringify([{ a: "check", from: 0, to: 100 }]));
+  ok("donk low board allows a small lead", (() => { const z = zD({ tb: "low", spr: 4, street: "flop" }); return z[0].a === "bet" && z[0].to > 0 && z[0].to < 12; })());
+  ok("probe after give-up is far wider than a donk", zD({ tb: "ahi", spr: 4, street: "turn", gaveUp: true })[0].to >= 20);
+  ok("multiway tightens the probe", zD({ tb: "ahi", spr: 4, street: "turn", gaveUp: true, mw: 3 })[0].to < zD({ tb: "ahi", spr: 4, street: "turn", gaveUp: true })[0].to);
+
+  // The exact reported spot: call a 3-bet OOP (UTG+1 vs BTN) -> hero is FIRST to
+  // act on the flop (donk stage), not dropped straight into facing a c-bet.
+  const mk = () => ({ stage: "vs3bet", heroPos: "UTG+1", aggPos: "BTN", aggP: M.PROF.maniac, aggStk: 100, hu: false, mode: "9max",
+    S: 100, bbv: 2, effBB: 100, potBB: 20, openBB: 5, villains: [{ pos: "BTN", p: M.PROF.maniac, stk: 100, act: "3-bets $31" }],
+    hand: { cards: [{ r: 14, s: "s" }, { r: 13, s: "h" }], label: "AKo", pct: 2.4 } });
+  const c1 = M.continuation(mk(), "call", 2);
+  ok("OOP 3-bet call → hero acts first (donk)", c1.nextSc && c1.nextSc.stage === "donk" && c1.nextSc.street === "flop", c1.nextSc && c1.nextSc.stage);
+  ok("donk spot carries the villain", !!(c1.nextSc && c1.nextSc.vil && c1.nextSc.vil.p));
+  // Checking hands the aggressor the option — either they fire (same-street vsCbet)
+  // or check behind (next-street donk). Never a terminal, never a crash.
+  let fired = 0, checkedBehind = 0;
+  for (let i = 0; i < 60; i++) {
+    const cc = M.continuation(c1.nextSc, "check", 2);
+    if (!cc.nextSc) { ok("donk check never ends the hand", false, cc.text); break; }
+    if (cc.nextSc.stage === "vsCbet" && cc.nextSc.street === "flop") fired++;
+    else if (cc.nextSc.stage === "donk" && cc.nextSc.street === "turn") checkedBehind++;
+  }
+  ok("donk check → villain fires (same street) or checks behind (next street)", fired > 0 && checkedBehind >= 0 && fired + checkedBehind === 60, `fired=${fired} checked=${checkedBehind}`);
+  // Calling a flop c-bet ALWAYS continues to a turn decision (no collapsed showdown).
+  let contTurn = 0;
+  for (let i = 0; i < 60; i++) {
+    let cc = M.continuation(c1.nextSc, "check", 2);
+    while (cc.nextSc && !(cc.nextSc.stage === "vsCbet" && cc.nextSc.street === "flop")) cc = { nextSc: null }; // only inspect the fired case
+    if (!cc.nextSc) continue;
+    const c2 = M.continuation(cc.nextSc, "call", 2);
+    if (c2.nextSc && (c2.nextSc.street === "turn")) contTurn++;
+    else { ok("flop c-bet call must reach a turn decision", false, c2.text); break; }
+  }
+  ok(`flop c-bet call reached a turn decision every time (${contTurn} runs)`, contTurn > 0);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

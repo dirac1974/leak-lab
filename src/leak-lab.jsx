@@ -347,6 +347,24 @@ function zonesFor(stage, ctx) {
       }
       return [{ a: "raise", from: 0, to: j }, { a: "call", from: j, to: c }, { a: "fold", from: c, to: 100 }];
     }
+    if (stage === "donk") {
+      /* First to act WITHOUT the betting lead. Two very different worlds:
+         - vs a live aggressor (they 3-bet/raised and haven't slowed): leading
+           ("donking") is nearly always wrong — check almost everything and let
+           them keep the betting lead. A tiny lead band survives on low/wet
+           boards that smash the caller's range, wider when shallow.
+         - after they GAVE UP (checked back / stopped barrelling): their range is
+           capped — probe wide for value and folds.
+         Authored bands, NOT Stats-signed; needs a walk-forward reference. */
+      const street = ctx.street || "flop";
+      const gave = !!ctx.gaveUp;
+      const L = (sz) => `BET ${pctLbl(SIZES[street][sz])}`;
+      const lead = gave
+        ? Math.max(20, Math.min(62, (44 + sh * 1.2 + (ctx.tb === "wet" || ctx.tb === "low" ? 4 : 0)) * (mw > 1 ? 0.8 : 1)))
+        : Math.max(0, (((ctx.tb === "low" || ctx.tb === "wet") ? 5 : 0) + sh * 0.4) * (mw > 1 ? 0.6 : 1));
+      if (lead <= 0.5) return [{ a: "check", from: 0, to: 100 }];
+      return [{ a: "bet", sz: "s", sizes: gave ? ["s", "b"] : ["s"], lbl: L("s"), from: 0, to: lead }, { a: "check", from: lead, to: 100 }];
+    }
     if (stage === "riverBet") {
       const v = Math.max(10, (36 + sh * 0.5 - dp - mwV) * vF);
       const nut = Math.max(6, Math.min(13, v - 1));
@@ -531,7 +549,7 @@ const POSTBET = { flop: 0.66, turn: 0.7, river: 0.75 };
 /* Hero's selectable sizings per street: small + big (chip-rounded, stack-capped) */
 const SIZES = { flop: { s: 0.33, b: 0.75 }, turn: { s: 0.66, b: 1.25 }, river: { s: 0.75, b: 1.5 } };
 const pctLbl = (f) => `${Math.round(f * 100)}%`;
-const AGG_STAGES = ["cbet", "barrel", "riverBet"];
+const AGG_STAGES = ["cbet", "barrel", "riverBet", "donk"];
 /* Villains pick a size too — aggro profiles size up, passive ones stab small */
 function pickVSize(p, street) {
   const big = Math.min(0.55, Math.max(0.08, p.cbet - 0.4));
@@ -550,7 +568,7 @@ function respondToBet(p, frac) {
 }
 const postOrd = (p) => (p === "SB" ? 0 : p === "BB" ? 1 : 2 + ORDER[p]);
 const postIP = (hero, vil) => postOrd(hero) > postOrd(vil);
-const POST_STAGES = ["cbet", "barrel", "riverBet", "vsCbet", "vsBarrel", "riverCall", "vsRaise"];
+const POST_STAGES = ["cbet", "barrel", "riverBet", "vsCbet", "vsBarrel", "riverCall", "vsRaise", "donk"];
 /* Bet currently faced: villain's chosen size (vFrac), chip-rounded, capped by stack */
 function betInfo(sc, frac) {
   const bbv = sc.bbv || 2;
@@ -746,7 +764,7 @@ function leakKey(stage, best, chosen) {
     if (best === "call") return chosen === "fold" ? "def_overfold" : "def_over3bet";
     return chosen === "call" ? "def_overcall" : "def_over3bet";
   }
-  if (stage === "cbet" || stage === "barrel") return best === "bet" ? "pf_undercbet" : "pf_overcbet";
+  if (stage === "cbet" || stage === "barrel" || stage === "donk") return best === "bet" ? "pf_undercbet" : "pf_overcbet";
   if (stage === "vsCbet" || stage === "vsBarrel") {
     if (best === "raise") return chosen === "fold" ? "pf_overfold_cb" : "pf_missraise";
     if (best === "call") return chosen === "fold" ? "pf_overfold_cb" : "pf_spewraise";
@@ -1145,6 +1163,60 @@ function continuation(sc, action, bbv) {
     };
   }
 
+  /* first to act without the betting lead: check (then the aggressor decides) or
+     lead into them. Also the probe spot after they've given up the lead. */
+  if (sc.stage === "donk") {
+    const v = sc.vil;
+    const gave = !!sc.gaveUp;
+    if (action === "check") {
+      // Aggressor still live: they usually keep firing. Gave up: only a rare stab.
+      const pBet = v.p.cbet * (gave ? 0.35 : sc.street === "flop" ? 1.0 : 0.8);
+      if (Math.random() < pBet) {
+        const stage2 = sc.street === "river" ? "riverCall" : sc.street === "flop" ? "vsCbet" : "vsBarrel";
+        const sc2 = { ...sc, stage: stage2, gaveUp: undefined, defMw: Math.max(1, sc.defMw || 1), vFrac: pickVSize(v.p, sc.street) };
+        const bi = betInfo(sc2);
+        sc2.villains = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `bets ${usd(bi.b * bv)} (${pctLbl(bi.frac)})` } : x));
+        sc2.vil = sc2.villains.find((x) => x.pos === v.pos) || v;
+        return { text: `You check — ${v.p.icon} ${gave ? "takes another stab at it" : "fires"} ${money(bi.b)}.`, nextSc: sc2 };
+      }
+      if (sc.street === "river") {
+        const winP = winPMw((100 - sc.cls.rank) / 100, Math.max(1, sc.defMw || 1));
+        const won = Math.random() < winP;
+        return { text: `You check — it checks through. Showdown: ${won ? `your ${sc.cls.label} wins ${money(sc.potBB)}` : "villain takes it"}.`, result: res(won, sc.potBB) };
+      }
+      const nextStreet = sc.street === "flop" ? "turn" : "river";
+      const sc2 = postSeed({ ...sc, stage: "donk", gaveUp: true }, nextStreet, sc.potBB);
+      return { text: `You check — ${v.p.icon} checks behind. ${nextStreet === "turn" ? "Turn" : "River"}…`, nextSc: sc2 };
+    }
+    // lead/probe: the single opponent responds to the bet
+    const opts = heroBetOpts(sc);
+    const chosen = opts.find((o) => o.id === action) || opts[0];
+    const b = chosen.b, bAllIn = chosen.allIn, frac = chosen.frac;
+    let r = respond(v.p.vsBet);
+    if (bAllIn && r === "r") r = "c";
+    if (r === "f") return { text: `You ${gave ? "probe" : "lead"} ${money(b)} (${pctLbl(frac)}) — ${v.p.icon} lets it go. ${money(sc.potBB)} your way.`, result: +(sc.potBB / 2) };
+    if (r === "r") {
+      const eff = sc.effBB == null ? sc.S : sc.effBB;
+      const to = Math.min(eff, Math.max(chipBB(b * 3.2, bv), chipBB(b * 2 + 1, bv)));
+      const vAllIn = to >= eff - 0.01;
+      const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: vAllIn ? `raises all-in ${usd(to * bv)}` : `raises to ${usd(to * bv)}` } : x));
+      return {
+        text: `You ${gave ? "probe" : "lead"} ${money(b)} — ${v.p.icon} ${v.pos} raises to ${money(to)}${vAllIn ? ", all-in" : ""}.`,
+        nextSc: { ...sc, stage: "vsRaise", gaveUp: undefined, faceBB: to - b, raiseTo: to, faceAllIn: vAllIn, aggP: v.p, aggPos: v.pos, vil: v, field: [v], villains: patched, effBB: eff - b, potBB: sc.potBB + b + to },
+      };
+    }
+    const newPot = sc.potBB + 2 * b;
+    if (bAllIn || sc.street === "river") {
+      const base = Math.min(0.9, Math.max(0.08, (100 - sc.cls.rank) / 100 - (sc.street === "river" ? 0.15 : 0.05)));
+      const won = Math.random() < base;
+      const lead2 = bAllIn && sc.street !== "river" ? "calls it off — board runs out" : "calls. Showdown";
+      return { text: `You ${gave ? "probe" : "lead"} ${money(b)} — ${v.p.icon} ${lead2}: ${won ? `your ${sc.cls.label} is good — ${money(newPot)} shipped` : "they pay you no respect, with reason"}.`, result: res(won, newPot) };
+    }
+    const nextStreet = sc.street === "flop" ? "turn" : "river";
+    const sc2 = postSeed({ ...sc, stage: "donk", gaveUp: undefined, effBB: sc.effBB - b, villains: sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `calls ${usd(b * bv)}` } : x)) }, nextStreet, newPot);
+    return { text: `You ${gave ? "probe" : "lead"} ${money(b)} — ${v.p.icon} calls. ${nextStreet === "turn" ? "Turn" : "River"}…`, nextSc: sc2 };
+  }
+
   /* facing a raise of your own bet (or a re-jam over your raise): call closes the
      street; with chips behind the raiser keeps the initiative into the next one */
   if (sc.stage === "vsRaise") {
@@ -1178,9 +1250,10 @@ function continuation(sc, action, bbv) {
       sc2.vil = sc2.villains.find((x) => x.pos === v.pos);
       return { text: `You call ${money(callAmt)}. ${v.p.icon} keeps the pressure on the ${nextStreet}.`, nextSc: sc2 };
     }
-    const winP = Math.min(0.9, Math.max(0.08, (100 - sc.cls.rank) / 100 - 0.08));
-    const won = Math.random() < winP;
-    return { text: `You call ${money(callAmt)}. ${v.p.icon} slows down — it checks to showdown: ${won ? `you take ${money(newPot)}` : "their hand holds up"}.`, result: res(won, newPot) };
+    // Raiser slows down: hero probes the next street instead of a collapsed showdown.
+    const scP = postSeed({ ...sc, stage: "donk", gaveUp: true, faceBB: undefined, raiseTo: undefined, faceAllIn: undefined, defMw: 1, effBB: heroBehind - callAmt,
+      villains: sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: "checks" } : x)) }, nextStreet, newPot);
+    return { text: `You call ${money(callAmt)}. ${v.p.icon} slows down. ${nextStreet === "turn" ? "Turn" : "River"}…`, nextSc: scP };
   }
 
   /* defender line: vsCbet → vsBarrel → riverCall */
@@ -1242,10 +1315,12 @@ function continuation(sc, action, bbv) {
       sc2.vil = sc2.villains.find((x) => x.pos === v.pos);
       return { text: `You call ${money(bet)}${dMw > 1 ? " — the rest step aside" : ""}. ${v.p.icon} keeps betting the ${nextStreet}.`, nextSc: sc2 };
     }
-    const winP = winPMw((100 - sc.cls.rank) / 100, dMw);
-    const won = Math.random() < winP;
-    const r2 = won ? `you take ${money(newPot)}` : dMw > 1 ? "the field wins the showdown" : "villain wins the showdown";
-    return { text: `You call ${money(bet)}${dMw > 1 ? " — the rest step aside" : ""}. ${v.p.icon} shuts down — checks to the end: ${r2}.`, result: res(won, newPot) };
+    // Villain slows down: the hand does NOT collapse to a showdown — the next
+    // street is hero's check-or-probe decision against a now-capped range.
+    const nextStreet = sc.street === "flop" ? "turn" : "river";
+    const scP = postSeed({ ...sc, stage: "donk", gaveUp: true, defMw: 1, effBB: sc.effBB - bet, vFrac: undefined,
+      villains: sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: "checks" } : x)) }, nextStreet, newPot);
+    return { text: `You call ${money(bet)}${dMw > 1 ? " — the rest step aside" : ""}. ${v.p.icon} slows down. ${nextStreet === "turn" ? "Turn" : "River"}…`, nextSc: scP };
   }
 
   /* preflop — chains into postflop */
@@ -1323,14 +1398,26 @@ function continuation(sc, action, bbv) {
     if (action === "call") {
       // Multiway pot: everyone's money is already in sc.potBB; hero completes.
       const pot0 = nC ? sc.potBB + openC - blindC(sc.heroPos, bv) : srpPot(openC, sc.heroPos, sc.openerPos, bv);
+      const ip = postIP(sc.heroPos, sc.openerPos);
+      if (!nC && !ip) {
+        // Heads-up and out of position: hero acts first on the flop — check or
+        // lead. The opener's c-bet decision happens after the check, inside donk.
+        const sc2 = postSeed({ ...sc, vil: v, defMw: 1, ip, effBB: effVs(sc.S, sc.openerStk, openC), stage: "donk", pre: "Single-raised pot — you're first to act" }, "flop", pot0);
+        return { text: `You call ${money(openC)}. Flop — you're first to act.`, nextSc: sc2 };
+      }
       if (Math.random() < sc.openerP.cbet) {
-        const sc2 = postSeed({ ...sc, vil: v, defMw: nC + 1, ip: postIP(sc.heroPos, sc.openerPos), effBB: effVs(sc.S, sc.openerStk, openC), vFrac: pickVSize(sc.openerP, "flop"), stage: "vsCbet" }, "flop", pot0);
+        const sc2 = postSeed({ ...sc, vil: v, defMw: nC + 1, ip, effBB: effVs(sc.S, sc.openerStk, openC), vFrac: pickVSize(sc.openerP, "flop"), stage: "vsCbet" }, "flop", pot0);
         const bi = betInfo(sc2);
         sc2.villains = sc2.villains.map((x) => (x.pos === v.pos ? { ...x, act: `c-bets ${usd(bi.b * bv)} (${pctLbl(bi.frac)})` } : x));
         sc2.vil = sc2.villains.find((x) => x.pos === v.pos);
         return { text: `You call ${money(openC)}${nC ? ` — ${nC + 2}-way flop` : ""}. ${sc.openerP.icon} c-bets into the ${nC ? "field" : "flop"}.`, nextSc: sc2 };
       }
-      { const won = Math.random() < winPMw(0.5, nC + 1); return { text: `You call. It checks through — ${won ? "you sneak the showdown" : nC ? "the field edges it" : "villain edges it"}.`, result: res(won, pot0) }; }
+      if (!nC) {
+        // Heads-up, in position, and the opener checks to you: your stab decision.
+        const sc2 = postSeed({ ...sc, vil: v, defMw: 1, ip, effBB: effVs(sc.S, sc.openerStk, openC), stage: "donk", gaveUp: true, villains: sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: "checks" } : x)) }, "flop", pot0);
+        return { text: `You call ${money(openC)}. Flop — ${sc.openerP.icon} checks to you.`, nextSc: sc2 };
+      }
+      { const won = Math.random() < winPMw(0.5, nC + 1); return { text: `You call. It checks through — ${won ? "you sneak the showdown" : "the field edges it"}.`, result: res(won, pot0) }; }
     }
     const r = respond(sc.openerP.vs3);
     if (r === "r") {
@@ -1367,7 +1454,14 @@ function continuation(sc, action, bbv) {
     const v = { pos: sc.aggPos, p: sc.aggP };
     if (action === "call") {
       const pot3 = (2 * tbC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(sc.aggPos, bv));
-      const sc2 = postSeed({ ...sc, vil: v, ip: postIP(sc.heroPos, sc.aggPos), effBB: effVs(sc.S, sc.aggStk, tbC), vFrac: pickVSize(sc.aggP, "flop"), stage: "vsCbet" }, "flop", pot3);
+      const ip = postIP(sc.heroPos, sc.aggPos);
+      if (!ip) {
+        // Out of position vs the 3-bettor: HERO acts first on the flop — a real
+        // check-or-lead decision, not a compressed auto-check into their c-bet.
+        const sc2 = postSeed({ ...sc, vil: v, ip, effBB: effVs(sc.S, sc.aggStk, tbC), stage: "donk", pre: "3-bet pot — you're first to act" }, "flop", pot3);
+        return { text: `You call the 3-bet, ${money(pot3)} pot. Flop — you're first to act.`, nextSc: sc2 };
+      }
+      const sc2 = postSeed({ ...sc, vil: v, ip, effBB: effVs(sc.S, sc.aggStk, tbC), vFrac: pickVSize(sc.aggP, "flop"), stage: "vsCbet" }, "flop", pot3);
       const bi = betInfo(sc2);
       sc2.villains = sc2.villains.map((x) => (x.pos === v.pos ? { ...x, act: `c-bets ${usd(bi.b * bv)} (${pctLbl(bi.frac)})` } : x));
       sc2.vil = sc2.villains.find((x) => x.pos === v.pos);
@@ -2014,6 +2108,9 @@ function contextLine(sc) {
   const mwN = sc.field && sc.field.length > 1 ? sc.field.length : 0;
   if (sc.stage === "cbet" || sc.stage === "barrel") return `${st}${mwN ? ` ${mwN + 1}-way` : ""} — ${sc.ip ? "checked to you as the raiser" : "you're first to act as the raiser"}. Bet or check?`;
   if (sc.stage === "riverBet") return "River — the betting lead is yours. Thin value, bluff, or shut it down?";
+  if (sc.stage === "donk") return sc.gaveUp
+    ? `${st} — ${sc.vil.p.name} gave up the betting lead. Probe or check?`
+    : `${st} — you're first to act vs ${sc.vil.p.name}'s ${sc.street === "flop" ? "raise" : "lead"}. Check is usually right — lead only with a reason.`;
   if (sc.stage === "vsCbet" || sc.stage === "vsBarrel") return `${st} — ${sc.vil.p.name} fires ${pctLbl(betInfo(sc).frac)} pot at you.`;
   if (sc.stage === "riverCall") return `River — ${sc.vil.p.name} bets ${pctLbl(betInfo(sc).frac)} pot. Bluff-catch or let it go?`;
   if (sc.stage === "vsRaise") return betInfo(sc).allIn
@@ -2653,7 +2750,7 @@ export default function App() {
 
   const act = (a) => {
     const post = POST_STAGES.includes(sc.stage);
-    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
+    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, street: sc.street, gaveUp: sc.gaveUp, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
     const pct = post ? sc.cls.rank : sc.hand.pct;
     const g = (sc.stage === "vsJam" || sc.stage === "vs4bet") ? gradeStackoff(zones, pct, a, sc) : AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
     const cont = continuation(sc, a, bbv);
@@ -2661,7 +2758,7 @@ export default function App() {
     const hEv = +(handEv + g.ev).toFixed(2);
     setHandEv(terminal ? 0 : hEv);
     const skey = sc.stage === "rfi" ? "rfi" : sc.stage === "vsOpen" ? "vsOpen"
-      : sc.stage === "cbet" || sc.stage === "barrel" ? "cbet"
+      : sc.stage === "cbet" || sc.stage === "barrel" || sc.stage === "donk" ? "cbet"
       : sc.stage === "vsCbet" || sc.stage === "vsBarrel" ? "vsCbet"
       : sc.stage === "riverBet" || sc.stage === "riverCall" ? "rivers" : "pressure";
     setSess((s) => {
@@ -2724,7 +2821,7 @@ export default function App() {
   const openTrend = useMemo(() => (openLeak ? leakTrend(leakRecs, openLeak) : null), [openLeak, leakRecs]);
   const isPost = sc ? POST_STAGES.includes(sc.stage) : false;
   const scPct = sc ? (isPost ? sc.cls.rank : sc.hand.pct) : 0;
-  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, ...dynCtx(sc), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
+  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, street: sc.street, gaveUp: sc.gaveUp, ...dynCtx(sc), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
   const acts = sc
     ? (AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
       : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]

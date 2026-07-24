@@ -520,5 +520,51 @@
    "from": 30.57,
    "to": 100
   }
+ ],
+ "donk vs aggressor ahi": [
+  {
+   "a": "check",
+   "from": 0,
+   "to": 100
+  }
+ ],
+ "donk vs aggressor low": [
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 0,
+   "to": 3.68
+  },
+  {
+   "a": "check",
+   "from": 3.68,
+   "to": 100
+  }
+ ],
+ "donk probe after give-up": [
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 0,
+   "to": 40.04
+  },
+  {
+   "a": "check",
+   "from": 40.04,
+   "to": 100
+  }
+ ],
+ "donk probe wet 3way": [
+  {
+   "a": "bet",
+   "sz": "s",
+   "from": 0,
+   "to": 35.23
+  },
+  {
+   "a": "check",
+   "from": 35.23,
+   "to": 100
+  }
  ]
 }
