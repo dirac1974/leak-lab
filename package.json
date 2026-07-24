@@ -8,6 +8,7 @@
     "test": "node tools/test/run-tests.js",
     "sim:test": "node tools/sim/test-evaluator.js",
     "sim:oracle": "node tools/sim/oracle.js",
+    "sim:aggregate": "node tools/sim/aggregate-equity.js",
     "serve": "npx --yes http-server -p 8080 -c-1 ."
   },
   "devDependencies": {

@@ -64,6 +64,28 @@ Old auth users stay in the shared project; delete them there if you want a clean
 
 ---
 
+## Equity aggregator (populates `ll_equity_cache`)
+
+`tools/sim/aggregate-equity.js` turns pooled `ll_equity_samples` into confirmed
+cache rows. Trust model: the crowd's raw tallies decide **which** board spots are
+worth caching (demand), but the equity published to clients is an **authoritative
+server-side Monte-Carlo recompute** of that exact spot — a poisoned or noisy pool
+can never push a wrong number into grading. A key is confirmed only when it clears
+the demand gate (`N_MIN` pooled trials across `SID_MIN` distinct devices, each
+capped by `PER_SID_CAP`) **and** the pooled estimate agrees with the recompute
+within `TOL`.
+
+```bash
+# needs the service_role key — keep it in CI/cron secrets, never in the repo
+SUPABASE_SERVICE_ROLE_KEY=... npm run sim:aggregate
+# logic-only, no DB, no secret:
+node tools/sim/aggregate-equity.js --self-test
+```
+
+Schedule it (GitHub Actions cron or Supabase scheduled job). Going live on grading
+is still gated separately: flip `EQUITY_CACHE_LIVE` in `src/leak-lab.jsx` only after
+a walk-forward validation reference and a Stats sign-off.
+
 ## Notes
 
 - The **publishable key is meant to be public** — it ships in the bundle. RLS is what
