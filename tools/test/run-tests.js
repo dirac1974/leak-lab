@@ -16,7 +16,7 @@ fs.cpSync(path.join(root, "src"), tmp, { recursive: true });
 fs.copyFileSync(path.join(tmp, "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
-  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, bucketKeyOf, mcEquity, jamEquity, EQUITY_MODEL_V, dailyRollup, continuation, genScenario, heroBetOpts, openIds, AGG_STAGES };\n");
+  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, bucketKeyOf, mcEquity, jamEquity, EQUITY_MODEL_V, dailyRollup, continuation, genScenario, genHand, heroBetOpts, openIds, AGG_STAGES, POS_BY_OFFSET };\n");
 esbuild.buildSync({
   entryPoints: [path.join(tmp, "probe.jsx")], bundle: true, format: "cjs",
   jsx: "automatic", loader: { ".jsx": "jsx" }, external: ["react", "react/jsx-runtime"],
@@ -325,6 +325,57 @@ ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) ==
   ok("no 'hand logged' stub text remains", stubText === 0, `${stubText} stub texts seen`);
   ok("every walk terminates within 15 decisions", unterminated === 0, `${unterminated} walks still going`);
   ok(`vsRaise reached organically (${sawVsRaise}x) and resolves`, sawVsRaise >= 3 && vsRaiseResolved >= 1, `saw ${sawVsRaise}, resolved ${vsRaiseResolved}`);
+}
+
+/* ---- 10. Full-hand mode: the BB check-option crash + a full-hand walk ----
+   The drill walk (section 9) never plays from the BB in a limped full-hand pot,
+   which is exactly where sc.vil went undefined and froze the hand on the next
+   click. Pin the exact spot, then walk genHand end-to-end like a real session. */
+{
+  // Hero IS the BB checking their option: the flop bettor must be the limper,
+  // and the continuation chain must survive the next action.
+  const scBB = { stage: "rfi", heroPos: "BB", hu: false, mode: "9max", S: 100, bbv: 2, potBB: 2.5, effBB: 99, limpers: 1,
+    limpersIn: [{ pos: "UTG", p: M.PROF.lag, stk: 100, act: "limps $2" }],
+    villains: [{ pos: "UTG", p: M.PROF.lag, stk: 100, act: "limps $2" }, { pos: "SB", p: M.PROF.nit, stk: 100 }],
+    hand: { cards: [{ r: 9, s: "h" }, { r: 7, s: "d" }], label: "97o", pct: 60 } };
+  const cont = M.continuation(scBB, "limp", 2);
+  ok("BB option: hand continues to the flop", !!cont.nextSc, cont.text);
+  ok("BB option: flop villain is the limper, defined", !!(cont.nextSc && cont.nextSc.vil && cont.nextSc.vil.p), cont.nextSc && JSON.stringify(cont.nextSc.vil));
+  let follow = null, threw = false;
+  try { follow = cont.nextSc ? M.continuation(cont.nextSc, "call", 2) : null; } catch (e) { threw = true; }
+  ok("BB option: next decision does not crash", !threw && follow && (follow.result != null || follow.nextSc));
+
+  // Full-hand walk: deal real hands from a table (button rotates) and play them
+  // out — every continuation must settle or continue, exactly like section 9.
+  const CFG = { mode: "9max", hu: "tag", seats: ["nit", "reg", "lag", "station", "maniac", "tag", "station", "nit", "reg"], stake: 0, stack: 2, image: "unknown", play: "hand" };
+  const N = M.POS_BY_OFFSET[CFG.mode].length;
+  const table = () => { const seats = [], stks = []; for (let s = 0; s < N; s++) { seats[s] = s === 0 ? null : CFG.seats[(s - 1) % CFG.seats.length]; stks[s] = s === 0 ? null : 100; } return { btn: (Math.random() * N) | 0, heroSeat: 0, seats, stks }; };
+  const pick = (sc) => {
+    if (M.AGG_STAGES.includes(sc.stage)) { const o = M.heroBetOpts(sc).map((x) => x.id); return Math.random() < 0.8 && o.length ? o[(Math.random() * o.length) | 0] : "check"; }
+    if (sc.stage === "rfi") { const p = [...M.openIds(sc.bbv || 2, sc.hu), "limp", "limp"]; return p[(Math.random() * p.length) | 0]; } // limp-heavy: the BB-option path
+    if (sc.stage === "vsOpen") { const p = ["fold", "call", "raiseS", "call"]; return p[(Math.random() * p.length) | 0]; }
+    if (sc.stage === "riverCall" || sc.stage === "vsJam") return Math.random() < 0.5 ? "call" : "fold";
+    const p = ["call", "raise", "call", "fold"]; return p[(Math.random() * p.length) | 0];
+  };
+  let hands = 0, deadEnds = 0, crashed = 0, unterminated = 0;
+  for (let h = 0; h < 200; h++) {
+    let t = table(), sc = null;
+    try { sc = M.genHand(CFG, t); let g = 0; while (sc && sc.stage === "walk" && g++ < 10) { t = { ...t, btn: t.btn + 1 }; sc = M.genHand(CFG, t); } } catch (e) { crashed++; continue; }
+    if (!sc || sc.stage === "walk") continue;
+    hands++;
+    let done = false;
+    for (let s = 0; s < 15; s++) {
+      let cont;
+      try { cont = M.continuation(sc, pick(sc), 2); } catch (e) { crashed++; done = true; break; }
+      if (cont.nextSc) { sc = cont.nextSc; continue; }
+      if (cont.result == null) deadEnds++;
+      done = true; break;
+    }
+    if (!done) unterminated++;
+  }
+  ok(`full-hand walk: ${hands} hands, no crashes`, crashed === 0, `${crashed} crashed`);
+  ok("full-hand walk: no dead-ends", deadEnds === 0, `${deadEnds}`);
+  ok("full-hand walk: all hands terminate", unterminated === 0, `${unterminated}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

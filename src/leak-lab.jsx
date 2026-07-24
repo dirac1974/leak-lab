@@ -1266,15 +1266,20 @@ function continuation(sc, action, bbv) {
           return { text: `${v.p.icon} ${v.pos} raises your limp to ${money(isoC)}.`, nextSc: { ...sc, stage: "vsOpen", openBB: isoC, openerPos: v.pos, openerP: v.p, villains: patched, effBB: effVs(sc.S, v.stk, isoC), openerStk: v.stk, effPre: Math.min(sc.S, v.stk || sc.S), potBB: (limpC + isoC + 1 + sbv - blindC(sc.heroPos, bv) - blindC(v.pos, bv)) } };
         }
       }
+      // The flop bettor is the BB — unless HERO is the BB (checking their option),
+      // where the bettor is the first limper. Patching by bb.pos, not the literal
+      // "BB", is what keeps sc.vil defined in that spot: villains never contains a
+      // BB row when hero holds it, and an undefined vil froze the hand on the
+      // next click (crash inside the action handler).
       const bb = sc.villains.find((x) => x.pos === "BB") || (sc.limpersIn && sc.limpersIn[0]);
-      if (!bb) return { text: "Checked through.", result: 0 };
+      if (!bb || !bb.p) return { text: "Checked through.", result: 0 };
       const nOthers = (sc.limpersIn || []).length; // limpers ahead see the flop too
       const potLimp = ((2 + nOthers) * limpC + sbv - blindC(sc.heroPos, bv));
-      const sc2 = postSeed({ ...sc, vil: bb, defMw: 1 + nOthers, openerPos: "BB", openerP: bb.p, ip: postIP(sc.heroPos, "BB"), effBB: effVs(sc.S, bb.stk, limpC), vFrac: 0.33, stage: "vsCbet", pre: "Limped pot — BB checks, you're in a family pot", villains: sc.villains.map((x) => (x.pos === "BB" ? { ...x, act: "checks" } : x.act && x.act.indexOf("limps") >= 0 ? x : x.act ? x : { ...x, act: "folds" })) }, "flop", potLimp);
+      const sc2 = postSeed({ ...sc, vil: bb, defMw: 1 + nOthers, openerPos: bb.pos, openerP: bb.p, ip: postIP(sc.heroPos, bb.pos), effBB: effVs(sc.S, bb.stk, limpC), vFrac: 0.33, stage: "vsCbet", pre: sc.heroPos === "BB" ? "Limped pot — you checked your option" : "Limped pot — BB checks, you're in a family pot", villains: sc.villains.map((x) => (x.pos === bb.pos ? { ...x, act: "checks" } : x.act && x.act.indexOf("limps") >= 0 ? x : x.act ? x : { ...x, act: "folds" })) }, "flop", potLimp);
       const bi = betInfo(sc2);
-      sc2.villains = sc2.villains.map((x) => (x.pos === "BB" ? { ...x, act: `bets ${usd(bi.b * bv)} (${pctLbl(bi.frac)})` } : x));
-      sc2.vil = sc2.villains.find((x) => x.pos === "BB");
-      return { text: `You limp ${money(limpC)}. It checks around — flop in a limped pot.`, nextSc: sc2 };
+      sc2.villains = sc2.villains.map((x) => (x.pos === bb.pos ? { ...x, act: `bets ${usd(bi.b * bv)} (${pctLbl(bi.frac)})` } : x));
+      sc2.vil = sc2.villains.find((x) => x.pos === bb.pos) || { ...bb };
+      return { text: `You ${sc.heroPos === "BB" ? "check your option" : `limp ${money(limpC)}`}. It checks around — flop in a limped pot.`, nextSc: sc2 };
     }
     // Walk the whole field: limpers respond call-heavy, players behind respond
     // normally. A raise anywhere short-circuits to a 3-bet pot; callers stack up
