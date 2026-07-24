@@ -2172,6 +2172,26 @@ function sbSubmitEquity(profId, heroCards, board, r) {
   } catch (e) {}
 }
 
+/* Roll banked session records up to one point per local calendar day, so the
+   trend chart shows a daily dot no matter how often auto-bank fires. Accuracy is
+   reconstructed as a decision-weighted average (records carry acc% + n, not the
+   raw good count); EV-per-decision is the day's total ev over its total n. */
+function dailyRollup(recs) {
+  if (!recs || !recs.length) return recs || [];
+  const byDay = new Map();
+  for (const r of recs) {
+    const d = new Date(r.t);
+    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    let a = byDay.get(key);
+    if (!a) { a = { t: r.t, n: 0, good: 0, ev: 0, realized: 0, hands: 0 }; byDay.set(key, a); }
+    const n = r.n || 0;
+    if (r.t > a.t) a.t = r.t;
+    a.n += n; a.good += Math.round(((r.acc || 0) / 100) * n);
+    a.ev += r.ev || 0; a.realized += r.realized || 0; a.hands += r.hands || 0;
+  }
+  return [...byDay.values()].sort((x, y) => x.t - y.t)
+    .map((a) => ({ ...a, acc: a.n ? Math.round((100 * a.good) / a.n) : 0, evPer: a.n ? +(a.ev / a.n).toFixed(3) : 0 }));
+}
 /* Tiny dependency-free SVG line chart for the progress view. */
 function LineChart({ series, height = 150, yLabel, fmtY }) {
   const W = 320, H = height, padL = 34, padR = 10, padT = 12, padB = 22;
@@ -2347,6 +2367,7 @@ export default function App() {
   const [cloudHist, setCloudHist] = useState(null); // cloud session records when signed in
   const [emailInput, setEmailInput] = useState("");
   const [cloudMsg, setCloudMsg] = useState("");
+  const [autoBankMsg, setAutoBankMsg] = useState("");
 
   // Cloud bootstrap: capture magic-link tokens from the URL hash, restore saved
   // sessions, refresh expired tokens, and pull history.
@@ -2466,6 +2487,28 @@ export default function App() {
     setHandEv(0); setFb(null); setPeek(null); setView("train");
   };
   const resetSession = () => { bankSession(); setSess({ n: 0, good: 0, ev: 0, leaks: {}, byStage: {}, aggr: 0, pass: 0, foldn: 0, realized: 0, hands: 0 }); };
+  // Auto-bank so a long grind isn't lost: every 10 completed hands (full mode) or
+  // 30 decisions (drill mode), bank the session and roll into a fresh one — giving
+  // clean, non-overlapping history dots. Only fires when there's somewhere to save
+  // (a selected player or a signed-in account); guests keep accumulating as before.
+  const AUTOBANK_HANDS = 10, AUTOBANK_SPOTS = 30;
+  useEffect(() => {
+    if (!(profile || (CLOUD_ON && cloud)) || sess.n < 5) return;
+    const unit = cfg.play === "hand" ? sess.hands : sess.n;
+    const threshold = cfg.play === "hand" ? AUTOBANK_HANDS : AUTOBANK_SPOTS;
+    if (unit < threshold) return;
+    const saved = bankSession();
+    setSess({ n: 0, good: 0, ev: 0, leaks: {}, byStage: {}, aggr: 0, pass: 0, foldn: 0, realized: 0, hands: 0 });
+    if (saved) setAutoBankMsg(`Auto-banked ${unit} ${cfg.play === "hand" ? "hands" : "spots"} ✓`);
+  }, [sess.hands, sess.n]);
+  useEffect(() => { if (!autoBankMsg) return; const t = setTimeout(() => setAutoBankMsg(""), 2600); return () => clearTimeout(t); }, [autoBankMsg]);
+  // Leaving the training screen banks the trailing partial session, so the tail
+  // below the auto-bank threshold is never lost now that the manual button is gone.
+  useEffect(() => {
+    if (view === "train") return;
+    if (!(profile || (CLOUD_ON && cloud)) || sess.n < 5) return;
+    if (bankSession()) setSess({ n: 0, good: 0, ev: 0, leaks: {}, byStage: {}, aggr: 0, pass: 0, foldn: 0, realized: 0, hands: 0 });
+  }, [view]);
 
   const act = (a) => {
     const post = POST_STAGES.includes(sc.stage);
@@ -2559,6 +2602,13 @@ export default function App() {
     <div style={{ minHeight: "100vh", background: `radial-gradient(120% 90% at 50% 0%, #16201B 0%, ${T.ink} 55%)`, fontFamily: BODY, color: T.bone }}>
       <style>{CSS}</style>
       <div style={{ maxWidth: 440, margin: "0 auto", padding: "16px 14px 130px" }}>
+
+        {autoBankMsg && (
+          <div style={{ position: "fixed", top: 14, left: "50%", transform: "translateX(-50%)", zIndex: 50, background: T.brass, color: "#171309",
+            fontFamily: DISP, fontWeight: 700, fontSize: 12, letterSpacing: 1, padding: "8px 16px", borderRadius: 999, boxShadow: "0 4px 16px rgba(0,0,0,.35)" }}>
+            {autoBankMsg}
+          </div>
+        )}
 
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
           <div>
@@ -2860,12 +2910,16 @@ export default function App() {
           const plist = profilesList();
           const recs = (CLOUD_ON && cloud && cloudHist) ? cloudHist : history;
           const nRec = recs.length;
-          const accSeries = recs.map((r, i) => ({ x: i, y: r.acc }));
-          const evSeries = recs.map((r, i) => ({ x: i, y: r.evPer }));
-          const firstAcc = nRec ? recs[0].acc : 0, lastAcc = nRec ? recs[nRec - 1].acc : 0;
+          // Chart + its descriptors run on daily rollups (one dot per day); the stat
+          // tiles below stay on raw banked sessions.
+          const daily = dailyRollup(recs);
+          const nDay = daily.length;
+          const accSeries = daily.map((r, i) => ({ x: i, y: r.acc }));
+          const evSeries = daily.map((r, i) => ({ x: i, y: r.evPer }));
+          const firstAcc = nDay ? daily[0].acc : 0, lastAcc = nDay ? daily[nDay - 1].acc : 0;
           const delta = lastAcc - firstAcc;
           const totalDec = recs.reduce((s, r) => s + r.n, 0);
-          const bestAcc = nRec ? Math.max(...recs.map((r) => r.acc)) : 0;
+          const bestAcc = nDay ? Math.max(...daily.map((r) => r.acc)) : 0;
           return (
             <div>
               {CLOUD_ON && (
@@ -2951,19 +3005,19 @@ export default function App() {
                 Browsers can clear website data (iPhone Safari deletes it after 7 days away). Two ways to make your progress permanent: add Leak Lab to your home screen — an installed app's data is protected — or back it up above. Signing in with email keeps sessions in the cloud too.
               </div>
 
-              <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "22px 0 4px" }}>ACCURACY OVER SESSIONS</div>
-              {nRec < 2 ? (
+              <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "22px 0 4px" }}>ACCURACY BY DAY</div>
+              {nDay < 2 ? (
                 <div style={{ fontFamily: MONO, fontSize: 11, color: T.dim, padding: "18px 0" }}>
-                  {profile ? `Play and bank at least 2 sessions to see your trend.${nRec === 1 ? " 1 saved so far." : ""}` : "Add a player to start tracking."}
+                  {profile ? `Play on at least 2 days to see your trend.${nDay === 1 ? " 1 day so far." : ""}` : "Add a player to start tracking."}
                 </div>
               ) : (
                 <>
                   <LineChart series={[{ points: accSeries, color: T.club }]} fmtY={(t) => Math.round(t) + "%"} />
                   <div style={{ display: "flex", justifyContent: "space-between", fontFamily: MONO, fontSize: 10, color: T.dim, marginTop: 2 }}>
-                    <span>session 1</span><span>session {nRec}</span>
+                    <span>day 1</span><span>day {nDay}</span>
                   </div>
                   <div style={{ fontFamily: MONO, fontSize: 11.5, color: delta >= 0 ? T.club : T.heart, marginTop: 8 }}>
-                    {delta >= 0 ? "▲" : "▼"} {delta >= 0 ? "+" : ""}{delta}% accuracy since your first session — {delta > 3 ? "clear improvement." : delta >= -3 ? "holding steady." : "slipping; review your top leaks."}
+                    {delta >= 0 ? "▲" : "▼"} {delta >= 0 ? "+" : ""}{delta}% accuracy since your first day — {delta > 3 ? "clear improvement." : delta >= -3 ? "holding steady." : "slipping; review your top leaks."}
                   </div>
 
                   <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "22px 0 4px" }}>EV LOST PER DECISION · lower is better</div>
@@ -3009,9 +3063,6 @@ export default function App() {
                 <Stat k="BEST ACC" v={nRec ? `${bestAcc}%` : "—"} color={T.club} />
               </div>
 
-              {sess.n >= 5 && (profile || (CLOUD_ON && cloud)) && (
-                <Btn full kind="raise" label="Bank current session →" onClick={() => { bankSession(); setSess({ n: 0, good: 0, ev: 0, leaks: {}, byStage: {}, aggr: 0, pass: 0, foldn: 0, realized: 0, hands: 0 }); }} />
-              )}
               {nRec > 0 && profile && (
                 <div className="ll-tap" onClick={() => { store.set(histKey(profile), []); setHistory([]); }}
                   style={{ textAlign: "center", fontFamily: MONO, fontSize: 10.5, color: T.dim, marginTop: 12, textDecoration: "underline" }}>clear {profile}'s history</div>

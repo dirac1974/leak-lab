@@ -16,7 +16,7 @@ fs.cpSync(path.join(root, "src"), tmp, { recursive: true });
 fs.copyFileSync(path.join(tmp, "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
-  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, mcEquity, jamEquity, EQUITY_MODEL_V };\n");
+  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, mcEquity, jamEquity, EQUITY_MODEL_V, dailyRollup };\n");
 esbuild.buildSync({
   entryPoints: [path.join(tmp, "probe.jsx")], bundle: true, format: "cjs",
   jsx: "automatic", loader: { ".jsx": "jsx" }, external: ["react", "react/jsx-runtime"],
@@ -228,6 +228,23 @@ ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) ==
   ok("mcEquity returns tallies", e && typeof e.wins === "number" && typeof e.ties === "number" && e.n > 0);
   ok("mcEquity tallies match equity", e && Math.abs((e.wins + e.ties / 2) / e.n - e.equity) < 1e-9);
   ok("mcEquity equity in [0,1]", e && e.equity >= 0 && e.equity <= 1 && e.wins + e.ties <= e.n);
+}
+
+/* ---- 7. Daily rollup: banked records collapse to one decision-weighted point per day ---- */
+{
+  const DAY = 86400000, t0 = 1700000000000;
+  const rr = [
+    { t: t0, n: 10, acc: 80, ev: 2, evPer: 0.2, hands: 3 },
+    { t: t0 + 60000, n: 10, acc: 60, ev: 4, evPer: 0.4, hands: 4 }, // same day as above
+    { t: t0 + DAY, n: 20, acc: 50, ev: 10, evPer: 0.5, hands: 6 },  // next day
+  ];
+  const roll = M.dailyRollup(rr);
+  ok("dailyRollup collapses same-day records", roll.length === 2, `got ${roll.length}`);
+  ok("dailyRollup weights accuracy by decisions", roll[0].acc === 70, `got ${roll[0] && roll[0].acc}`); // (8+6)/20
+  ok("dailyRollup sums n + averages evPer", roll[0].n === 20 && Math.abs(roll[0].evPer - 0.3) < 1e-9, `n=${roll[0].n} evPer=${roll[0].evPer}`);
+  ok("dailyRollup keeps distinct days", roll[1].acc === 50 && roll[1].n === 20);
+  ok("dailyRollup sorts by time + sums hands", roll[0].t < roll[1].t && roll[0].hands === 7);
+  ok("dailyRollup empty passthrough", M.dailyRollup([]).length === 0);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
