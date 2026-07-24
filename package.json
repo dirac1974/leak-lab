@@ -4,7 +4,7 @@
   "description": "Mobile-first live No-Limit Hold'em strategy trainer — read real player types, drill the spots, price every leak in your stakes.",
   "license": "MIT",
   "scripts": {
-    "build": "esbuild src/entry.jsx --bundle --minify --jsx=automatic --loader:.jsx=jsx --outfile=.build/leak-lab.bundle.js && node build.js",
+    "build": "esbuild src/entry.jsx --bundle --minify --jsx=automatic --loader:.jsx=jsx --outfile=.build/leak-lab.bundle.js && esbuild src/equity-worker.js --bundle --minify --format=iife --outfile=.build/equity-worker.bundle.js && node build.js",
     "test": "node tools/test/run-tests.js",
     "sim:test": "node tools/sim/test-evaluator.js",
     "sim:oracle": "node tools/sim/oracle.js",

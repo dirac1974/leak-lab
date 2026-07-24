@@ -13,6 +13,11 @@ const SB_ORIGIN = JSON.parse(fs.readFileSync("src/supabase-config.json", "utf8")
 const RUNTIME_FILES = ["sw.js", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 const js = fs.readFileSync(".build/leak-lab.bundle.js", "utf8").replace(/<\/script>/g, "<\\/script>");
+// The background equity worker ships as a separate same-origin file (worker-src
+// 'self' — it can't be an inlined blob). Emitted to repo root (for `npm run serve`)
+// and _site/ (deploy); loaded via new Worker("./equity-worker.js").
+const workerJs = fs.readFileSync(".build/equity-worker.bundle.js", "utf8");
+fs.writeFileSync("equity-worker.js", workerJs);
 const swReg = `if("serviceWorker" in navigator){addEventListener("load",function(){navigator.serviceWorker.register("./sw.js").catch(function(){})})}`;
 
 // The browser hashes the exact text between <script> and </script>. Interpolate
@@ -70,6 +75,7 @@ fs.rmSync("_site", { recursive: true, force: true });
 fs.mkdirSync("_site", { recursive: true });
 fs.writeFileSync("_site/index.html", html);
 for (const f of RUNTIME_FILES) fs.copyFileSync(f, "_site/" + f);
+fs.writeFileSync("_site/equity-worker.js", workerJs);
 // Real security headers for Cloudflare Pages (frame-ancestors, nosniff, etc.).
 fs.writeFileSync("_site/_headers", `/*
   Content-Security-Policy: ${cspHeader}

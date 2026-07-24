@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { FONT_CSS } from "./fonts-gen.js";
 import { JAM_EQ } from "./data/jam-equity.js";
 import { EQUITY_CACHE } from "./data/equity-cache.js";
@@ -10,124 +10,9 @@ import SB_CONFIG from "./supabase-config.json";
    GTO is the internal grading baseline; the product voice is practical.
 ==================================================================== */
 
-const RC = { 14: "A", 13: "K", 12: "Q", 11: "J", 10: "T", 9: "9", 8: "8", 7: "7", 6: "6", 5: "5", 4: "4", 3: "3", 2: "2" };
-
-function handScore(hi, lo, suited) {
-  if (hi === lo) return 28 + hi * 5.8;
-  let s = hi * 3.2 + lo * 1.4;
-  const gap = hi - lo - 1;
-  s += gap === 0 ? 6 : gap === 1 ? 3.5 : gap === 2 ? 1.5 : 0;
-  if (suited) s += 7;
-  if (hi >= 10 && lo >= 10) s += 5;
-  if (hi === 14 && lo <= 5) s += suited ? 2.5 : 0.5;
-  if (gap >= 4 && hi < 14) s -= 1.5;
-  return s;
-}
-
-// 169 hand classes, combo-weighted percentiles (0 = strongest)
-const RANKED = (() => {
-  const arr = [];
-  for (let hi = 14; hi >= 2; hi--) {
-    for (let lo = hi; lo >= 2; lo--) {
-      if (hi === lo) arr.push({ label: RC[hi] + RC[lo], hi, lo, suited: false, pair: true, combos: 6, score: handScore(hi, lo, false) });
-      else {
-        arr.push({ label: RC[hi] + RC[lo] + "s", hi, lo, suited: true, pair: false, combos: 4, score: handScore(hi, lo, true) });
-        arr.push({ label: RC[hi] + RC[lo] + "o", hi, lo, suited: false, pair: false, combos: 12, score: handScore(hi, lo, false) });
-      }
-    }
-  }
-  arr.sort((a, b) => b.score - a.score);
-  let cum = 0;
-  arr.forEach((h) => { h.pct = ((cum + h.combos / 2) / 1326) * 100; cum += h.combos; });
-  return arr;
-})();
-const PCT = Object.fromEntries(RANKED.map((h) => [h.label, h.pct]));
-
-const SUITS = ["s", "h", "d", "c"];
-function materialize(h) {
-  const s1 = SUITS[(Math.random() * 4) | 0];
-  let s2 = s1;
-  if (!h.suited) { do { s2 = SUITS[(Math.random() * 4) | 0]; } while (s2 === s1); }
-  return [{ r: h.hi, s: s1 }, { r: h.lo, s: s2 }];
-}
-function deal() {
-  const a = (Math.random() * 52) | 0;
-  let b; do { b = (Math.random() * 52) | 0; } while (b === a);
-  const c1 = { r: (a % 13) + 2, s: SUITS[(a / 13) | 0] }, c2 = { r: (b % 13) + 2, s: SUITS[(b / 13) | 0] };
-  const [hiC, loC] = c1.r >= c2.r ? [c1, c2] : [c2, c1];
-  const suited = hiC.s === loC.s && hiC.r !== loC.r;
-  const label = hiC.r === loC.r ? RC[hiC.r] + RC[loC.r] : RC[hiC.r] + RC[loC.r] + (suited ? "s" : "o");
-  return { cards: [hiC, loC], label, pct: PCT[label] };
-}
-/* ---------------- On-device equity (Monte Carlo) ----------------
-   Real equity of the hero's exact hand vs a modeled villain range, so the "run
-   the math" button gives ground truth, not the heuristic percentile. Card int:
-   (r-2)*4 + suit, so rank = c>>2 (0-12), suit = c&3. Exact 5-card scorer packs
-   category + tiebreaks into one integer; eval7 takes the best of C(7,5)=21. */
-const SIDX = { s: 0, h: 1, d: 2, c: 3 };
-const encCard = (c) => (c.r - 2) * 4 + SIDX[c.s];
-function rank5i(c0, c1, c2, c3, c4) {
-  const r0 = c0 >> 2, r1 = c1 >> 2, r2 = c2 >> 2, r3 = c3 >> 2, r4 = c4 >> 2;
-  const flush = ((c0 & 3) === (c1 & 3)) && ((c1 & 3) === (c2 & 3)) && ((c2 & 3) === (c3 & 3)) && ((c3 & 3) === (c4 & 3));
-  const cnt = [0,0,0,0,0,0,0,0,0,0,0,0,0];
-  cnt[r0]++; cnt[r1]++; cnt[r2]++; cnt[r3]++; cnt[r4]++;
-  let mask = (1<<r0)|(1<<r1)|(1<<r2)|(1<<r3)|(1<<r4);
-  let sHigh = -1;
-  if (mask === 0b1000000001111) sHigh = 3; // wheel A-5
-  else for (let h = 12; h >= 4; h--) { const need = 0b11111 << (h - 4); if ((mask & need) === need) { sHigh = h; break; } }
-  if (flush && sHigh >= 0) return (8 << 20) | (sHigh << 16);
-  let quad = -1, trip = -1, p1 = -1, p2 = -1;
-  for (let r = 12; r >= 0; r--) { if (cnt[r] === 4) quad = r; else if (cnt[r] === 3) trip = r; else if (cnt[r] === 2) { if (p1 < 0) p1 = r; else p2 = r; } }
-  if (quad >= 0) { const k = [r0,r1,r2,r3,r4].find((r) => r !== quad); return (7<<20)|(quad<<16)|(k<<12); }
-  if (trip >= 0 && p1 >= 0) return (6<<20)|(trip<<16)|(p1<<12);
-  if (flush) { const a=[r0,r1,r2,r3,r4].sort((x,y)=>y-x); return (5<<20)|(a[0]<<16)|(a[1]<<12)|(a[2]<<8)|(a[3]<<4)|a[4]; }
-  if (sHigh >= 0) return (4<<20)|(sHigh<<16);
-  if (trip >= 0) { const ks=[r0,r1,r2,r3,r4].filter((r)=>r!==trip).sort((x,y)=>y-x); return (3<<20)|(trip<<16)|(ks[0]<<12)|(ks[1]<<8); }
-  if (p1 >= 0 && p2 >= 0) { const k=[r0,r1,r2,r3,r4].find((r)=>r!==p1&&r!==p2); return (2<<20)|(p1<<16)|(p2<<12)|(k<<8); }
-  if (p1 >= 0) { const ks=[r0,r1,r2,r3,r4].filter((r)=>r!==p1).sort((x,y)=>y-x); return (1<<20)|(p1<<16)|(ks[0]<<12)|(ks[1]<<8)|(ks[2]<<4); }
-  const a=[r0,r1,r2,r3,r4].sort((x,y)=>y-x); return (a[0]<<16)|(a[1]<<12)|(a[2]<<8)|(a[3]<<4)|a[4];
-}
-const C7 = (() => { const o=[]; for(let a=0;a<3;a++)for(let b=a+1;b<4;b++)for(let d=b+1;d<5;d++)for(let e=d+1;e<6;e++)for(let f=e+1;f<7;f++)o.push([a,b,d,e,f]); return o; })();
-function eval7(c) { let best = -1; for (let i=0;i<C7.length;i++){ const t=C7[i]; const s=rank5i(c[t[0]],c[t[1]],c[t[2]],c[t[3]],c[t[4]]); if(s>best)best=s; } return best; }
-/* Sample one valid combo of a 169-class avoiding `used` (Set of card ints). */
-function sampleCombo(cls, used) {
-  const hiR = cls.hi - 2, loR = cls.lo - 2;
-  for (let t = 0; t < 12; t++) {
-    let s1 = (Math.random()*4)|0, s2;
-    if (cls.suited) s2 = s1; else { do { s2 = (Math.random()*4)|0; } while (s2 === s1); }
-    const c1 = hiR*4+s1, c2 = loR*4+s2;
-    if (c1 !== c2 && !used.has(c1) && !used.has(c2)) return [c1, c2];
-  }
-  return null;
-}
-/* Equity of heroCards (array of {r,s}) vs the top `rangePct`% preflop range,
-   completing from `board` (0–5 cards). Returns {equity, iters} or null. */
-function mcEquity(heroCards, board, rangePct, iters) {
-  const hero = heroCards.map(encCard);
-  const bd = (board || []).map(encCard);
-  const classes = RANKED.filter((h) => h.pct <= rangePct);
-  if (!classes.length || hero.length < 2) return null;
-  const totalCombos = classes.reduce((s, h) => s + h.combos, 0);
-  const used0 = new Set([...hero, ...bd]);
-  let win = 0, tie = 0, n = 0;
-  for (let it = 0; it < iters; it++) {
-    let vh = null;
-    for (let tr = 0; tr < 8 && !vh; tr++) {
-      let r = Math.random() * totalCombos, cls = classes[0];
-      for (let i = 0; i < classes.length; i++) { r -= classes[i].combos; if (r <= 0) { cls = classes[i]; break; } }
-      vh = sampleCombo(cls, used0);
-    }
-    if (!vh) continue;
-    const used = new Set(used0); used.add(vh[0]); used.add(vh[1]);
-    const b5 = bd.slice();
-    while (b5.length < 5) { const c = (Math.random()*52)|0; if (!used.has(c)) { used.add(c); b5.push(c); } }
-    const hs = eval7([hero[0], hero[1], b5[0], b5[1], b5[2], b5[3], b5[4]]);
-    const vs = eval7([vh[0], vh[1], b5[0], b5[1], b5[2], b5[3], b5[4]]);
-    if (hs > vs) win++; else if (hs === vs) tie++;
-    n++;
-  }
-  return n ? { equity: (win + tie / 2) / n, iters: n, wins: win, ties: tie, n } : null;
-}
+// Poker maths (range tables + Monte-Carlo scorer) live in a React-free module so
+// the background equity worker can share the exact same engine.
+import { RC, handScore, RANKED, PCT, SUITS, materialize, deal, SIDX, encCard, rank5i, C7, eval7, sampleCombo, mcEquity } from "./mc-engine.js";
 /* ---------------- Board-specific equity cache (crowd-pooled) ----------------
    equityKey collapses strategically-identical spots into one canonical string so
    samples pool across users: equity is invariant under any consistent relabeling
@@ -2435,6 +2320,13 @@ export default function App() {
   const [leakScope, setLeakScope] = useState("session");
   const [bkMsg, setBkMsg] = useState("");
   const [mc, setMc] = useState(null); // Monte-Carlo result for the current all-in spot
+  // Background equity sampling: contribute anonymized board equities to the shared
+  // pool (on by default; toggle persisted). A Web Worker runs the sim off the main
+  // thread so it never janks the UI; the page submits the tallies it posts back.
+  const [contribute, setContribute] = useState(() => store.get("ll_contribute", true));
+  const workerRef = useRef(null);
+  const sampleRef = useRef({ sessionJobs: 0 }); // current sampling target + counters
+  const kickRef = useRef(null);
   const runMath = () => {
     if (!sc || sc.stage !== "vsJam") return;
     setMc({ busy: true });
@@ -2459,6 +2351,44 @@ export default function App() {
   // Cloud bootstrap: capture magic-link tokens from the URL hash, restore saved
   // sessions, refresh expired tokens, and pull history.
   useEffect(() => { sbTrack("open"); }, []);
+  // Spin up the background sampler worker once. It computes off-thread and posts
+  // raw tallies back; we submit them here (network stays on the one connect-src
+  // surface). Accumulates ~JOBS_PER_SPOT×ITERS per spot, bounded per session,
+  // paused whenever the tab is hidden.
+  const SAMPLE_ITERS = 4000, JOBS_PER_SPOT = 6, SESSION_MAX_JOBS = 200;
+  useEffect(() => {
+    if (!CLOUD_ON) return;
+    let w;
+    try { w = new Worker("./equity-worker.js"); } catch (e) { return; }
+    workerRef.current = w;
+    const postJob = () => {
+      const t = sampleRef.current;
+      if (!t || !t.active || t.jobs >= JOBS_PER_SPOT || t.sessionJobs >= SESSION_MAX_JOBS) return;
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      t.jobs++; t.sessionJobs++;
+      w.postMessage({ heroCards: t.heroCards, board: t.board, jamRep: t.jamRep, iters: SAMPLE_ITERS });
+    };
+    kickRef.current = postJob;
+    w.onmessage = (e) => {
+      const d = e.data || {}, t = sampleRef.current;
+      if (t && !d.err && d.n) sbSubmitEquity(t.profId, t.heroCards, t.board, { wins: d.wins, ties: d.ties, n: d.n });
+      setTimeout(postJob, 250); // yield to the UI, then keep accumulating this spot
+    };
+    const onVis = () => { if (document.visibilityState === "visible") postJob(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); try { w.terminate(); } catch (e) {} workerRef.current = null; };
+  }, []);
+  // Point the sampler at the current postflop spot (its exact board + hero vs the
+  // villain profile's shove range — the equity the board cache needs). Off-spot or
+  // contribute-off leaves the worker idle.
+  useEffect(() => {
+    const t = sampleRef.current;
+    const profId = sc && (sc.stage === "vsJam" ? (sc.aggP && sc.aggP.id) : (sc.vil && sc.vil.p && sc.vil.p.id));
+    const board = sc && sc.board;
+    if (!contribute || !CLOUD_ON || !sc || !sc.hand || !profId || !PROF[profId] || !board || board.length < 3) { t.active = false; return; }
+    t.active = true; t.jobs = 0; t.profId = profId; t.heroCards = sc.hand.cards; t.board = board; t.jamRep = PROF[profId].jamRep;
+    if (kickRef.current) kickRef.current();
+  }, [sc, contribute]);
   useEffect(() => {
     if (!CLOUD_ON) return;
     (async () => {
@@ -3109,6 +3039,13 @@ export default function App() {
             </div>
             <div style={{ display: "flex", gap: 4, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, padding: 4, marginTop: 6 }}>
               {seg("Heads-up", cfg.mode === "hu", () => setCfg({ ...cfg, mode: "hu" }), "hu")}
+            </div>
+
+            <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>SHARED SOLVER</div>
+            <div className="ll-tap" onClick={() => { const v = !contribute; setContribute(v); store.set("ll_contribute", v); }}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, padding: "11px 14px" }}>
+              <span style={{ fontFamily: MONO, fontSize: 10.5, color: T.dim, lineHeight: 1.4 }}>Run quick equity sims in the background and share anonymous results, so everyone's postflop feedback gets sharper. Uses some battery; pauses when the app isn't open.</span>
+              <span style={{ flexShrink: 0, fontFamily: DISP, fontWeight: 700, fontSize: 12, letterSpacing: 1, color: contribute ? "#171309" : T.dim, background: contribute ? T.brass : "transparent", border: `1px solid ${contribute ? T.brass : T.line}`, borderRadius: 999, padding: "5px 14px" }}>{contribute ? "ON" : "OFF"}</span>
             </div>
 
             <div style={{ fontFamily: DISP, fontWeight: 600, fontSize: 12, letterSpacing: 2, color: T.dim, margin: "20px 0 8px" }}>STAKES</div>
