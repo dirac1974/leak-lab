@@ -67,13 +67,23 @@ Old auth users stay in the shared project; delete them there if you want a clean
 ## Equity aggregator (populates `ll_equity_cache`)
 
 `tools/sim/aggregate-equity.js` turns pooled `ll_equity_samples` into confirmed
-cache rows. Trust model: the crowd's raw tallies decide **which** board spots are
+cache rows at **two levels**. Exact canonical spots almost never repeat across
+users (~1M+ per profile per street), so the level where pooling actually converges
+is the **bucket**: profile × street × board-texture archetype × hand-strength
+decile — the same abstraction the strategy zones grade on, derived by the app's
+own `bucketKeyOf` (the aggregator imports it through its build probe, so client
+and server can never disagree). Lookup on the client is hierarchical: exact hit →
+bucket hit → baked preflop curve.
+
+Trust model (both levels): the crowd's raw tallies decide **which** cells are
 worth caching (demand), but the equity published to clients is an **authoritative
-server-side Monte-Carlo recompute** of that exact spot — a poisoned or noisy pool
-can never push a wrong number into grading. A key is confirmed only when it clears
-the demand gate (`N_MIN` pooled trials across `SID_MIN` distinct devices, each
-capped by `PER_SID_CAP`) **and** the pooled estimate agrees with the recompute
-within `TOL`.
+server-side Monte-Carlo recompute** — a poisoned or noisy pool can never push a
+wrong number into grading. A cell is confirmed only when it clears the demand gate
+(`N_MIN` pooled trials across `SID_MIN` distinct devices, each capped by
+`PER_SID_CAP`) **and** the pooled estimate agrees with the recompute within `TOL`
+(`TOL_BUCKET` for buckets, whose authoritative value is a weighted recompute of up
+to `BUCKET_MEMBER_CAP` most-observed member spots — capping is logged, never
+silent).
 
 ```bash
 # needs the service_role key — keep it in CI/cron secrets, never in the repo

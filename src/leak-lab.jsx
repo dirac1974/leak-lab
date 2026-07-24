@@ -45,11 +45,28 @@ function equityKey(profId, heroCards, board) {
   }
   return `${EQUITY_MODEL_V}|${profId}|${streetOf(bd)}|${best}`;
 }
-/* Look up a confirmed pooled equity for this exact board spot; null on miss. */
-function boardEquity(profId, heroCards, board) {
-  if (!heroCards || heroCards.length < 2) return null;
-  const hit = EQUITY_CACHE[equityKey(profId, heroCards, board)];
-  return hit == null ? null : hit;
+/* Bucket key: the same abstraction the strategy zones grade on — board texture
+   archetype × hero hand-strength decile (cls.rank) × street × profile. Exact
+   spots almost never repeat across users (~1M+ canonical flops per profile), but
+   bucket cells are hit constantly, so this is the level where pooled samples
+   actually converge. Defined here (not in the aggregator) so the client and the
+   aggregator can never derive the bucket differently — the aggregator imports
+   this exact function through its build probe. */
+function bucketKeyOf(profId, heroCards, board) {
+  const cls = classify(heroCards, board);
+  const decile = Math.min(9, Math.max(0, (cls.rank / 10) | 0));
+  return `b${EQUITY_MODEL_V}|${profId}|${streetOf(board)}|${textureBucket(board)}|${decile}`;
+}
+/* Confirmed pooled equity for this spot: exact canonical hit first (rare, only
+   heavily-drilled spots), then the texture×strength bucket, else null. The cache
+   param is injectable for tests; production always reads the baked EQUITY_CACHE. */
+function boardEquity(profId, heroCards, board, cache) {
+  const C = cache || EQUITY_CACHE;
+  if (!heroCards || heroCards.length < 2 || !board || board.length < 3) return null;
+  const exact = C[equityKey(profId, heroCards, board)];
+  if (exact != null) return exact;
+  const bucket = C[bucketKeyOf(profId, heroCards, board)];
+  return bucket == null ? null : bucket;
 }
 
 function sampleFromTop(t) {

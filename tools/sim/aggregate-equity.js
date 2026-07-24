@@ -17,11 +17,16 @@ const esbuild = require("esbuild");
 const root = path.join(__dirname, "..", "..");
 
 // Tunables.
-const N_MIN = 20000;   // min pooled trials before a spot is worth confirming
+const N_MIN = 20000;   // min pooled trials before a spot/bucket is worth confirming
 const SID_MIN = 2;     // min distinct contributors (one device can't confirm alone)
 const PER_SID_CAP = 60000; // cap any single sid's pooled trials, so one source can't dominate
 const VERIFY_ITERS = 120000; // authoritative recompute depth (SE ~0.14% at 50%)
-const TOL = 0.03;      // pooled-vs-recompute agreement band to confirm
+const TOL = 0.03;      // pooled-vs-recompute agreement band to confirm an exact spot
+// Buckets (texture × strength-decile) pool many distinct exact spots, so the
+// authoritative check recomputes a sample of members and allows a slightly wider
+// band (member-sampling noise on top of MC noise).
+const BUCKET_MEMBER_CAP = 12; // most-observed member spots recomputed per bucket
+const TOL_BUCKET = 0.04;
 
 const RRC = { A: 14, K: 13, Q: 12, J: 11, T: 10, "9": 9, "8": 8, "7": 7, "6": 6, "5": 5, "4": 4, "3": 3, "2": 2 };
 
@@ -43,7 +48,7 @@ function keyToSpot(k) {
 }
 
 // Pool raw sample rows into one tally per key, capping each contributor so no
-// single sid dominates. Returns { key -> { wins, ties, n, sids } }.
+// single sid dominates. Returns { key -> { wins, ties, n, sids, sidSet } }.
 function aggregateSamples(rows) {
   const bySidKey = {}; // `${k}\t${sid}` -> { wins, ties, n }
   for (const r of rows) {
@@ -53,13 +58,31 @@ function aggregateSamples(rows) {
   }
   const out = {};
   for (const kk of Object.keys(bySidKey)) {
-    const [k] = kk.split("\t");
+    const [k, sid] = kk.split("\t");
     const a = bySidKey[kk];
     const scale = a.n > PER_SID_CAP ? PER_SID_CAP / a.n : 1; // proportionally cap this sid
-    const o = (out[k] = out[k] || { wins: 0, ties: 0, n: 0, sids: 0 });
-    o.wins += a.wins * scale; o.ties += a.ties * scale; o.n += a.n * scale; o.sids += 1;
+    const o = (out[k] = out[k] || { wins: 0, ties: 0, n: 0, sidSet: new Set() });
+    o.wins += a.wins * scale; o.ties += a.ties * scale; o.n += a.n * scale; o.sidSet.add(sid);
   }
-  for (const k of Object.keys(out)) { const o = out[k]; o.equity = o.n ? (o.wins + o.ties / 2) / o.n : 0; }
+  for (const k of Object.keys(out)) { const o = out[k]; o.sids = o.sidSet.size; o.equity = o.n ? (o.wins + o.ties / 2) / o.n : 0; }
+  return out;
+}
+
+// Group exact-key aggregates into texture×strength buckets — the level where
+// samples from DIFFERENT exact spots reinforce each other. deriveBucket maps an
+// exact canonical key to its bucket key (null = unparseable, dropped).
+function bucketize(agg, deriveBucket) {
+  const out = {};
+  for (const k of Object.keys(agg)) {
+    const bk = deriveBucket(k);
+    if (!bk) continue;
+    const a = agg[k];
+    const b = (out[bk] = out[bk] || { wins: 0, ties: 0, n: 0, sidSet: new Set(), members: [] });
+    b.wins += a.wins; b.ties += a.ties; b.n += a.n;
+    for (const s of a.sidSet) b.sidSet.add(s);
+    b.members.push({ k, n: a.n });
+  }
+  for (const bk of Object.keys(out)) { const b = out[bk]; b.sids = b.sidSet.size; b.equity = b.n ? (b.wins + b.ties / 2) / b.n : 0; }
   return out;
 }
 
@@ -75,7 +98,7 @@ function loadEngine() {
   fs.copyFileSync(path.join(tmp, "leak-lab.jsx"), path.join(tmp, "src.jsx"));
   fs.writeFileSync(path.join(tmp, "probe.jsx"),
     fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
-    "\nexport { mcEquity, equityKey, PROF, EQUITY_MODEL_V };\n");
+    "\nexport { mcEquity, equityKey, bucketKeyOf, PROF, EQUITY_MODEL_V };\n");
   esbuild.buildSync({ entryPoints: [path.join(tmp, "probe.jsx")], bundle: true, format: "cjs",
     jsx: "automatic", loader: { ".jsx": "jsx" }, external: ["react", "react/jsx-runtime"], outfile: path.join(tmp, "probe.js"), logLevel: "silent" });
   return require(path.join(tmp, "probe.js"));
@@ -125,9 +148,10 @@ async function main() {
   }
   const agg = aggregateSamples(rows);
   const keys = Object.keys(agg);
-  console.log(`pooled ${rows.length} samples into ${keys.length} keys (rv ${RV})`);
+  console.log(`pooled ${rows.length} samples into ${keys.length} exact keys (rv ${RV})`);
   const upserts = [];
   let confirmed = 0, skippedDemand = 0, skippedDisagree = 0;
+  // Pass 1 — exact spots: only the heavily-drilled ones ever clear this gate.
   for (const k of keys) {
     const a = agg[k];
     if (!passesDemand(a)) { skippedDemand++; continue; }
@@ -142,8 +166,38 @@ async function main() {
     upserts.push({ k, rv: RV, equity: truth, n: Math.round(a.n), se: seOf(truth, a.n), confirmed: true, updated_at: new Date().toISOString() });
     confirmed++;
   }
+  // Pass 2 — texture×strength buckets: where cross-user pooling actually converges.
+  // The published value is a weighted authoritative recompute of the bucket's
+  // most-observed member spots; the crowd's pooled tally gates and cross-checks it.
+  const deriveBucket = (k) => { const s = keyToSpot(k); return s && s.rv === RV ? M.bucketKeyOf(s.profId, s.hero, s.board) : null; };
+  const buckets = bucketize(agg, deriveBucket);
+  let bConfirmed = 0, bSkippedDemand = 0, bSkippedDisagree = 0, membersCapped = 0;
+  for (const bk of Object.keys(buckets)) {
+    const b = buckets[bk];
+    if (!passesDemand(b)) { bSkippedDemand++; continue; }
+    const members = [...b.members].sort((x, y) => y.n - x.n);
+    const sample = members.slice(0, BUCKET_MEMBER_CAP);
+    if (members.length > sample.length) { membersCapped++; console.error(`  ${bk}: verifying ${sample.length} of ${members.length} member spots (by observed n)`); }
+    let wSum = 0, eSum = 0;
+    for (const m of sample) {
+      const spot = keyToSpot(m.k);
+      if (!spot) continue;
+      const e = recompute(M, spot, Math.round(VERIFY_ITERS / sample.length) + 20000);
+      if (e == null) continue;
+      wSum += m.n; eSum += e * m.n;
+    }
+    if (!wSum) continue;
+    const auth = +(eSum / wSum).toFixed(4);
+    if (Math.abs(b.equity - auth) > TOL_BUCKET) { bSkippedDisagree++;
+      console.error(`  DISAGREE ${bk}: pooled ${b.equity.toFixed(3)} vs member recompute ${auth.toFixed(3)} (n=${Math.round(b.n)}, sids=${b.sids}, members=${members.length})`);
+      continue;
+    }
+    upserts.push({ k: bk, rv: RV, equity: auth, n: Math.round(b.n), se: seOf(auth, b.n), confirmed: true, updated_at: new Date().toISOString() });
+    bConfirmed++;
+  }
   if (upserts.length) for (let i = 0; i < upserts.length; i += 500) await sbUpsert(conf, upserts.slice(i, i + 500));
-  console.log(`confirmed ${confirmed}, skipped ${skippedDemand} (below demand gate), ${skippedDisagree} (pool disagreed with recompute)`);
+  console.log(`exact: ${confirmed} confirmed, ${skippedDemand} below gate, ${skippedDisagree} disagreed`);
+  console.log(`buckets: ${bConfirmed} confirmed, ${bSkippedDemand} below gate, ${bSkippedDisagree} disagreed${membersCapped ? `, ${membersCapped} verified on a member sample` : ""}`);
 }
 
 // ── Self-test: exercises parse + aggregate + recompute agreement, no DB ───────
@@ -175,6 +229,29 @@ function selfTest() {
   // Per-sid cap: one giant sid is bounded so it can't dominate the pool.
   const capped = aggregateSamples([{ k: key, wins: 500000, ties: 0, n: 1000000, sid: "whale" }])[key];
   ok("per-sid cap bounds a dominant source", capped.n <= PER_SID_CAP + 1e-6, `n=${capped.n}`);
+  // Buckets: the canonical-key representative must land in the same bucket as the
+  // original cards (texture and hand class are suit-relabel invariant)...
+  const bkOrig = M.bucketKeyOf("nit", hero, board);
+  const bkRep = M.bucketKeyOf(spot.profId, spot.hero, spot.board);
+  ok("bucket key survives canonical round-trip", bkOrig === bkRep, `${bkOrig} vs ${bkRep}`);
+  ok("bucket key format", /^b1\|nit\|flop\|(ahi|bwy|paired|low|wet|mono)\|[0-9]$/.test(bkOrig), bkOrig);
+  // ...and different exact spots pool into their (possibly shared) buckets with
+  // summed tallies and distinct-sid union.
+  const C2 = (r, s) => ({ r, s });
+  const hero2 = [C2(13, "d"), C2(12, "d")], board2 = [C2(14, "h"), C2(9, "c"), C2(3, "s")];
+  const keyB = M.equityKey("nit", hero2, board2);
+  const rowsB = [
+    { k: key, wins: 600, ties: 20, n: 1200, sid: "a" }, { k: key, wins: 580, ties: 25, n: 1200, sid: "b" },
+    { k: keyB, wins: 700, ties: 10, n: 1500, sid: "b" }, { k: keyB, wins: 690, ties: 12, n: 1500, sid: "c" },
+  ];
+  const aggB = aggregateSamples(rowsB);
+  const derive = (k) => { const s = keyToSpot(k); return s ? M.bucketKeyOf(s.profId, s.hero, s.board) : null; };
+  const bkt = bucketize(aggB, derive);
+  const totalN = Object.values(bkt).reduce((s, b) => s + b.n, 0);
+  const totalSids = Object.values(bkt).reduce((s, b) => s + b.sids, 0);
+  ok("bucketize conserves trials", Math.abs(totalN - 5400) < 1e-6, `n=${totalN}`);
+  ok("bucketize unions distinct sids per bucket", Object.keys(bkt).length === 1 ? totalSids === 3 : totalSids === 4, `buckets=${Object.keys(bkt).length}, sids=${totalSids}`);
+  ok("bucketize tracks members", Object.values(bkt).reduce((s, b) => s + b.members.length, 0) === 2);
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
@@ -183,4 +260,4 @@ if (require.main === module) {
   if (process.argv.includes("--self-test")) selfTest();
   else main().catch((e) => { console.error(e.message || e); process.exit(1); });
 }
-module.exports = { keyToSpot, aggregateSamples, passesDemand, decideConfirm, seOf };
+module.exports = { keyToSpot, aggregateSamples, bucketize, passesDemand, decideConfirm, seOf };

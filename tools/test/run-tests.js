@@ -16,7 +16,7 @@ fs.cpSync(path.join(root, "src"), tmp, { recursive: true });
 fs.copyFileSync(path.join(tmp, "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
-  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, mcEquity, jamEquity, EQUITY_MODEL_V, dailyRollup, continuation, genScenario, heroBetOpts, openIds, AGG_STAGES };\n");
+  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, bucketKeyOf, mcEquity, jamEquity, EQUITY_MODEL_V, dailyRollup, continuation, genScenario, heroBetOpts, openIds, AGG_STAGES };\n");
 esbuild.buildSync({
   entryPoints: [path.join(tmp, "probe.jsx")], bundle: true, format: "cjs",
   jsx: "automatic", loader: { ".jsx": "jsx" }, external: ["react", "react/jsx-runtime"],
@@ -218,6 +218,19 @@ ok("EQUITY_MODEL_V is 1", M.EQUITY_MODEL_V === 1);
 // boardEquity: empty baked cache always misses
 ok("boardEquity miss returns null", M.boardEquity("nit", hero, board) === null);
 ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) === null);
+// Hierarchical lookup: exact hit beats bucket hit beats miss (injected cache).
+{
+  const ek = M.equityKey("nit", hero, board), bk = M.bucketKeyOf("nit", hero, board);
+  ok("bucketKeyOf format", /^b1\|nit\|flop\|(ahi|bwy|paired|low|wet|mono)\|[0-9]$/.test(bk), bk);
+  ok("boardEquity exact beats bucket", M.boardEquity("nit", hero, board, { [ek]: 0.61, [bk]: 0.4 }) === 0.61);
+  ok("boardEquity falls back to bucket", M.boardEquity("nit", hero, board, { [bk]: 0.4 }) === 0.4);
+  ok("boardEquity misses cleanly", M.boardEquity("nit", hero, board, { unrelated: 0.5 }) === null);
+  ok("boardEquity ignores preflop", M.boardEquity("nit", hero, [], { [bk]: 0.4 }) === null);
+  // bucket invariance: relabeling all suits consistently keeps the same bucket
+  const swapB = { s: "d", d: "s", h: "c", c: "h" };
+  const rl = (c) => ({ r: c.r, s: swapB[c.s] });
+  ok("bucketKeyOf suit-relabel invariant", M.bucketKeyOf("nit", hero.map(rl), board.map(rl)) === bk);
+}
 // SHADOW no-op: with the cache off, passing a board must not move any grade.
 { const scNoBd = { stage: "vsJam", aggP: M.PROF.nit, jamCall: 75, potBB: 128 };
   const scBd = { ...scNoBd, hand: { cards: hero }, board };
