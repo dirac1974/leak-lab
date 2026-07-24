@@ -309,6 +309,27 @@ function zonesFor(stage, ctx) {
       const c = Math.max(r + 8, Math.min(80, (B.c - st * 10 + sh * 0.8) * mdf * mwC * cbF));
       return [{ a: "raise", from: 0, to: r }, { a: "call", from: r, to: c }, { a: "fold", from: c, to: 100 }];
     }
+    if (stage === "vsRaise") {
+      /* Facing a raise of your own bet: continue tight — jam the top, call strong
+         hands and big draws, fold the rest. Wet boards continue wider (draw raises
+         exist), shallow stacks widen the stack-off, and frequent raisers get paid
+         off wider (GTO-anchored: raiseF = gto's vsBet.r leaves the chart unchanged).
+         Base shape ported from the 2026-07-22 cloud session; NOT yet Stats-signed —
+         needs a walk-forward reference before these bands count as calibrated. */
+      const rf = ctx.raiseF == null ? PROF.gto.vsBet.r : ctx.raiseF;
+      const rAdj = clampF(1 + (rf - PROF.gto.vsBet.r) * 2.2, 0.8, 1.6);
+      const j = Math.max(2.5, (B.r * 0.55 + sh * 0.3) * (mw > 1 ? 0.85 : 1));
+      const wetW = ctx.tb === "wet" || ctx.tb === "mono" ? 8 : 2;
+      const c = Math.max(j + 6, Math.min(46, (B.r * 1.9 + wetW + sh * 1.2) * rAdj * (mw > 1 ? 0.8 : 1)));
+      if (ctx.allIn) {
+        // Their raise is all-in: no re-raise exists, and draws realize fully — the
+        // jam band folds into a single call band, slightly tighter than vs a raise
+        // that still leaves chips behind.
+        const cAll = Math.max(j + 3, c * 0.85);
+        return [{ a: "call", from: 0, to: cAll }, { a: "fold", from: cAll, to: 100 }];
+      }
+      return [{ a: "raise", from: 0, to: j }, { a: "call", from: j, to: c }, { a: "fold", from: c, to: 100 }];
+    }
     if (stage === "riverBet") {
       const v = Math.max(10, (36 + sh * 0.5 - dp - mwV) * vF);
       const nut = Math.max(6, Math.min(13, v - 1));
@@ -512,10 +533,17 @@ function respondToBet(p, frac) {
 }
 const postOrd = (p) => (p === "SB" ? 0 : p === "BB" ? 1 : 2 + ORDER[p]);
 const postIP = (hero, vil) => postOrd(hero) > postOrd(vil);
-const POST_STAGES = ["cbet", "barrel", "riverBet", "vsCbet", "vsBarrel", "riverCall"];
+const POST_STAGES = ["cbet", "barrel", "riverBet", "vsCbet", "vsBarrel", "riverCall", "vsRaise"];
 /* Bet currently faced: villain's chosen size (vFrac), chip-rounded, capped by stack */
 function betInfo(sc, frac) {
   const bbv = sc.bbv || 2;
+  if (sc.stage === "vsRaise" && sc.faceBB != null) {
+    // Facing a raise of hero's bet: the amount owed is the raise increment, not a
+    // pot-fraction — capped by what hero has behind (which makes it a call all-in).
+    const eff0 = sc.effBB == null ? 9999 : sc.effBB;
+    const b0 = Math.min(sc.faceBB, eff0);
+    return { b: b0, allIn: b0 >= eff0 - 0.01 || !!sc.faceAllIn, frac: b0 / Math.max(1, sc.potBB) };
+  }
   const f = frac != null ? frac : sc.vFrac != null ? sc.vFrac : POSTBET[sc.street];
   const eff = sc.effBB == null ? 9999 : sc.effBB;
   const b = chipBB(f * sc.potBB, bbv);
@@ -1021,6 +1049,9 @@ function continuation(sc, action, bbv) {
 
   if (action === "fold") {
     if (sc.stage === "riverCall") return { text: `You let it go — the ${money(sc.potBB + bet)} pot ships to villain.`, result: -(sc.potBB / 2) };
+    // vsRaise: potBB already contains hero's bet plus the raise; hero's own share
+    // is roughly half of the matched money (pot minus the uncalled raise portion).
+    if (sc.stage === "vsRaise") return { text: `Too hot after the raise — you give it up.`, result: -((sc.potBB - (sc.faceBB || 0)) / 2) };
     const inv = isPost ? sc.potBB / 2 : (blindC(sc.heroPos, bv) || 0);
     return { text: sc.stage === "rfi" ? "You let it go. Next spot." : "You fold. On to the next one.", result: -inv };
   }
@@ -1045,7 +1076,20 @@ function continuation(sc, action, bbv) {
     const aiN = sc.aiN || 0;
     const resp = field.map((v) => { const x = respondToBetStk(v, frac, bet); let r = x.r; if (betAllIn && r === "r") r = "c"; return { v, r, cap: x.cap }; });
     const raiser = resp.find((x) => x.r === "r");
-    if (raiser) return { text: `You bet ${money(bet)} — ${raiser.v.p.icon} ${raiser.v.pos} raises${mw > 1 ? " (field folds)" : ""}. Raise-defense drills are next on the roadmap; hand logged.`, result: null };
+    if (raiser) {
+      // The hand keeps going: hero now faces the raise (vsRaise stage) on this
+      // same street. Everyone else steps aside — raise-over-bet pots play HU.
+      const eff = sc.effBB == null ? sc.S : sc.effBB;
+      const to = Math.min(eff, Math.max(chipBB(bet * 3.2, bv), chipBB(bet * 2 + 1, bv)));
+      const vAllIn = to >= eff - 0.01;
+      const patched = sc.villains.map((x) =>
+        x.pos === raiser.v.pos ? { ...x, act: vAllIn ? `raises all-in ${usd(to * bv)}` : `raises to ${usd(to * bv)}` }
+        : field.some((f) => f.pos === x.pos) ? { ...x, act: "folds" } : x);
+      return {
+        text: `You bet ${money(bet)} — ${raiser.v.p.icon} ${raiser.v.pos} raises to ${money(to)}${vAllIn ? ", all-in" : ""}${mw > 1 ? " and the rest get out" : ""}.`,
+        nextSc: { ...sc, stage: "vsRaise", faceBB: to - bet, raiseTo: to, faceAllIn: vAllIn, aggP: raiser.v.p, aggPos: raiser.v.pos, vil: raiser.v, field: [raiser.v], villains: patched, effBB: eff - bet, potBB: sc.potBB + bet + to },
+      };
+    }
     const cs = resp.filter((x) => x.r === "c");
     if (!cs.length) {
       if (aiN) { // earlier all-ins can't fold — the pot still goes to showdown
@@ -1084,6 +1128,44 @@ function continuation(sc, action, bbv) {
     };
   }
 
+  /* facing a raise of your own bet (or a re-jam over your raise): call closes the
+     street; with chips behind the raiser keeps the initiative into the next one */
+  if (sc.stage === "vsRaise") {
+    const v = sc.vil;
+    const heroBehind = sc.effBB == null ? 0 : sc.effBB;
+    if (action === "raise" && !allIn) {
+      // Jam over the raise — villain continues only with the top of their raises.
+      const r = respond(v.p.vs3);
+      if (r === "f") return { text: `You jam — ${v.p.icon} lets it go. ${money(sc.potBB)} slides your way.`, result: +(sc.potBB / 2) };
+      const newPot = sc.potBB + 2 * heroBehind - (sc.faceBB || 0); // hero's rest + villain matching it
+      const base = Math.min(0.9, Math.max(0.08, (100 - sc.cls.rank) / 100 - 0.12));
+      const won = Math.random() < base;
+      const lead = sc.street !== "river" ? "Board runs out" : "Showdown";
+      return { text: `You jam — ${v.p.icon} calls. ${lead}: ${won ? `your ${sc.cls.label} holds — ${money(newPot)} shipped` : "they raised with the goods"}.`, result: res(won, newPot) };
+    }
+    // call (a "raise" facing an all-in raise is just a call)
+    const callAmt = bet;
+    const newPot = sc.potBB + callAmt;
+    if (allIn || sc.street === "river") {
+      const base = Math.min(0.9, Math.max(0.06, (100 - sc.cls.rank) / 100 - 0.18));
+      const won = Math.random() < base;
+      const lead = allIn && sc.street !== "river" ? `You call all-in. Board runs out` : `You call ${money(callAmt)}. Showdown`;
+      return { text: `${lead}: ${won ? `your ${sc.cls.label} is good — ${money(newPot)} shipped` : "their raise was the real thing"}.`, result: res(won, newPot) };
+    }
+    const nextStreet = sc.street === "flop" ? "turn" : "river";
+    const barrelP = Math.min(0.9, v.p.cbet * 0.85 + 0.1); // a raiser rarely shuts down
+    if (Math.random() < barrelP) {
+      const sc2 = postSeed({ ...sc, stage: nextStreet === "turn" ? "vsBarrel" : "riverCall", faceBB: undefined, raiseTo: undefined, faceAllIn: undefined, defMw: 1, effBB: heroBehind - callAmt, vFrac: pickVSize(v.p, nextStreet) }, nextStreet, newPot);
+      const bi2 = betInfo(sc2);
+      sc2.villains = sc2.villains.map((x) => (x.pos === v.pos ? { ...x, act: `bets ${usd(bi2.b * bv)} (${pctLbl(bi2.frac)})` } : x));
+      sc2.vil = sc2.villains.find((x) => x.pos === v.pos);
+      return { text: `You call ${money(callAmt)}. ${v.p.icon} keeps the pressure on the ${nextStreet}.`, nextSc: sc2 };
+    }
+    const winP = Math.min(0.9, Math.max(0.08, (100 - sc.cls.rank) / 100 - 0.08));
+    const won = Math.random() < winP;
+    return { text: `You call ${money(callAmt)}. ${v.p.icon} slows down — it checks to showdown: ${won ? `you take ${money(newPot)}` : "their hand holds up"}.`, result: res(won, newPot) };
+  }
+
   /* defender line: vsCbet → vsBarrel → riverCall */
   if (sc.stage === "vsCbet" || sc.stage === "vsBarrel" || sc.stage === "riverCall") {
     const v = sc.vil;
@@ -1095,8 +1177,35 @@ function continuation(sc, action, bbv) {
       const verb = jam ? `jam ${money(to)}` : `raise to ${money(to)}`;
       const r = respond(v.p.vs3);
       if (r === "f") return { text: `You ${verb} — ${v.p.icon} folds. Pot's yours.`, result: +(sc.potBB / 2) };
-      if (jam || r === "c") return { text: `You ${verb} — ${v.p.icon} calls. ${jam ? "Stacks in; variance decides. Hand logged." : "Play vs raises lands next; hand logged."}`, result: null };
-      return { text: `You ${verb} — ${v.p.icon} jams. Top-of-range territory; hand logged.`, result: null };
+      if (jam && r !== "f") {
+        // Hero's raise was the jam and villain calls: all the chips are in.
+        const newPot = sc.potBB + 2 * to;
+        const base = Math.min(0.9, Math.max(0.08, (100 - sc.cls.rank) / 100 - 0.12));
+        const won = Math.random() < base;
+        const lead = sc.street !== "river" ? "Board runs out" : "Showdown";
+        return { text: `You ${verb} — ${v.p.icon} calls it off. ${lead}: ${won ? `your ${sc.cls.label} holds — ${money(newPot)} shipped` : "they had it"}.`, result: res(won, newPot) };
+      }
+      if (r === "c") {
+        // Villain calls the raise: hero takes the initiative into the next street.
+        const newPot = sc.potBB + 2 * to;
+        if (sc.street === "river") {
+          const base = Math.min(0.9, Math.max(0.06, (100 - sc.cls.rank) / 100 - 0.15));
+          const won = Math.random() < base;
+          return { text: `You ${verb} — ${v.p.icon} calls. Showdown: ${won ? `your ${sc.cls.label} is good — ${money(newPot)} shipped` : "they pay off with better"}.`, result: res(won, newPot) };
+        }
+        const nextStreet = sc.street === "flop" ? "turn" : "river";
+        const sc2 = postSeed({ ...sc, stage: nextStreet === "turn" ? "barrel" : "riverBet", field: [v], vil: v, effBB: sc.effBB - to,
+          villains: sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `calls your raise` } : x)) }, nextStreet, newPot);
+        return { text: `You ${verb} — ${v.p.icon} calls. ${nextStreet === "turn" ? "Turn" : "River"}, lead's yours…`, nextSc: sc2 };
+      }
+      // Villain re-jams over hero's raise: same decision shape as facing a raise —
+      // all-in variant of vsRaise on this street.
+      const effAll = sc.effBB;
+      const patched = sc.villains.map((x) => (x.pos === v.pos ? { ...x, act: `jams ${usd(effAll * bv)}` } : x));
+      return {
+        text: `You ${verb} — ${v.p.icon} ${v.pos} jams, all-in.`,
+        nextSc: { ...sc, stage: "vsRaise", faceBB: effAll - to, raiseTo: effAll, faceAllIn: true, aggP: v.p, aggPos: v.pos, field: [v], villains: patched, effBB: effAll - to, potBB: sc.potBB + effAll + to },
+      };
     }
     if (allIn || sc.street === "river") {
       const base = sc.street === "river" ? (sc.cls.rank <= 47 ? 0.52 : 0.28) : Math.min(0.9, Math.max(0.1, (100 - sc.cls.rank) / 100));
@@ -1268,7 +1377,7 @@ function continuation(sc, action, bbv) {
     if (r === "f") return { text: `You jam ${Math.round(Math.min(sc.S, sc.aggStk || sc.S))}bb — ${sc.aggP.icon} folds. Huge pot your way.`, result: +(sc.potBB / 2) };
     { const won = Math.random() < 0.5; return { text: `You jam — ${sc.aggP.icon} calls. ${Math.round(Math.min(sc.S, sc.aggStk || sc.S) * 2)}bb in the middle; variance decides.`, result: res(won, sc.potBB + 2 * (Math.min(sc.S, sc.aggStk || sc.S) - fourC)) }; }
   }
-  { const won = Math.random() < 0.5; return { text: `Stacks in — ${money(sc.potBB || sc.S * 2)} showdown. Variance decides; hand logged.`, result: res(won, sc.potBB || sc.S * 2) }; }
+  { const won = Math.random() < 0.5; return { text: `Stacks in — ${money(sc.potBB || sc.S * 2)} showdown: ${won ? "you hold" : "they get there"}.`, result: res(won, sc.potBB || sc.S * 2) }; }
 }
 
 /* ================= UI ================= */
@@ -1556,6 +1665,12 @@ function facingInfo(sc, bbv) {
     const { b, allIn, frac } = betInfo(sc);
     return { p: sc.vil.p, pos: sc.vil.pos, verb: allIn ? "ALL-IN" : sc.street === "flop" ? "C-BETS" : "BETS", amt: b, sub: `${b.toFixed(1)}bb · ${pctLbl(frac)} pot`, toCall: b, potNow: sc.potBB + b };
   }
+  if (sc.stage === "vsRaise") {
+    // Headline their full raise-to; what hero owes sits in the TO CALL row.
+    const { b, allIn } = betInfo(sc);
+    const to = sc.raiseTo == null ? b : sc.raiseTo;
+    return { p: sc.vil.p, pos: sc.vil.pos, verb: allIn ? "RAISES ALL-IN" : "RAISES TO", amt: to, sub: `${to.toFixed(1)}bb${allIn ? " all-in" : ""} over your bet`, toCall: b, potNow: sc.potBB };
+  }
   if (sc.stage === "vsOpen") { const ob = sc.openBB || OPEN(sc.hu, bv); return { p: sc.openerP, pos: sc.openerPos, verb: "OPENS", amt: ob, sub: `${ob.toFixed(1)}bb`, toCall: toCallBB(sc), potNow: sc.potBB }; }
   if (sc.stage === "vs3bet") { const t = threeBetBB(sc.openBB || OPEN(sc.hu, bv), "s"); return { p: sc.aggP, pos: sc.aggPos, verb: "3-BETS", amt: t, sub: `${t.toFixed(1)}bb`, toCall: toCallBB(sc), potNow: sc.potBB }; }
   if (sc.stage === "vs4bet") { const f4 = fourBetBB(threeBetBB(sc.openBB || OPEN(sc.hu, bv), "s")); return { p: sc.aggP, pos: sc.aggPos, verb: "4-BETS", amt: f4, sub: `${f4.toFixed(1)}bb`, toCall: toCallBB(sc), potNow: sc.potBB }; }
@@ -1580,6 +1695,7 @@ function actionLabel(stage, a, hu, sc, bbv) {
     const { b, allIn } = betInfo(sc);
     if (a === "call") return allIn ? `Call all-in ${usd(b * bv)}` : `Call ${usd(b * bv)}`;
     if (a === "raise") {
+      if (stage === "vsRaise") return `Jam ${usd(sc.effBB * bv)}`; // over a raise, hero's raise is the rest of the stack
       const to = Math.min(sc.effBB, chipBB(b * 3.2, bv));
       return to >= sc.effBB - 0.01 ? `Jam ${usd(to * bv)}` : `Raise ${usd(to * bv)}`;
     }
@@ -1866,7 +1982,7 @@ function imageEdge(sc, image) {
   if (image === "unknown") return "";
   const respect = imgRespectHigh(image), wide = imgWide(image);
   const heroAggr = sc.stage === "rfi" || AGG_STAGES.includes(sc.stage);
-  const heroDef = sc.stage === "vsCbet" || sc.stage === "vsBarrel" || sc.stage === "riverCall" || sc.stage === "vsOpen" || sc.stage === "vs3bet";
+  const heroDef = sc.stage === "vsCbet" || sc.stage === "vsBarrel" || sc.stage === "riverCall" || sc.stage === "vsRaise" || sc.stage === "vsOpen" || sc.stage === "vs3bet";
   if (heroAggr) return respect ? " Your tight image adds fold equity — bluffs and c-bets work better, so you can run a few more; thin value gets less action." : wide ? " Your loose image means less fold equity — bluff less and value-bet thicker, they'll pay you off." : "";
   if (heroDef) return respect ? " Because you look tight, thinking players bluff you less — give their aggression a bit more credit." : wide ? " Because you look loose, they bluff you more — bluff-catch a touch wider." : "";
   return "";
@@ -1878,6 +1994,9 @@ function contextLine(sc) {
   if (sc.stage === "riverBet") return "River — the betting lead is yours. Thin value, bluff, or shut it down?";
   if (sc.stage === "vsCbet" || sc.stage === "vsBarrel") return `${st} — ${sc.vil.p.name} fires ${pctLbl(betInfo(sc).frac)} pot at you.`;
   if (sc.stage === "riverCall") return `River — ${sc.vil.p.name} bets ${pctLbl(betInfo(sc).frac)} pot. Bluff-catch or let it go?`;
+  if (sc.stage === "vsRaise") return betInfo(sc).allIn
+    ? `${st} — ${sc.vil.p.name} shoves over your bet. Call it off or let it go?`
+    : `${st} — ${sc.vil.p.name} raises your bet. Jam, call, or give it up?`;
   if (sc.stage === "rfi") {
     if (sc.limpers) return sc.heroPos === "BB" ? `Your big blind — ${sc.limpers} limper${sc.limpers > 1 ? "s" : ""} in. Check your option or raise?` : `${sc.limpers} limper${sc.limpers > 1 ? "s" : ""} to you in the ${sc.heroPos}. Iso, overlimp, or let it go?`;
     return sc.hu ? "Small blind — first in. Your move." : sc.heroPos === "UTG" ? "First to act, under the gun." : `Folds to you in the ${sc.heroPos}.`;
@@ -2512,7 +2631,7 @@ export default function App() {
 
   const act = (a) => {
     const post = POST_STAGES.includes(sc.stage);
-    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
+    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
     const pct = post ? sc.cls.rank : sc.hand.pct;
     const g = (sc.stage === "vsJam" || sc.stage === "vs4bet") ? gradeStackoff(zones, pct, a, sc) : AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
     const cont = continuation(sc, a, bbv);
@@ -2583,10 +2702,11 @@ export default function App() {
   const openTrend = useMemo(() => (openLeak ? leakTrend(leakRecs, openLeak) : null), [openLeak, leakRecs]);
   const isPost = sc ? POST_STAGES.includes(sc.stage) : false;
   const scPct = sc ? (isPost ? sc.cls.rank : sc.hand.pct) : 0;
-  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, ...dynCtx(sc), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
+  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, ...dynCtx(sc), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
   const acts = sc
     ? (AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
       : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]
+      : sc.stage === "vsRaise" ? (betInfo(sc).allIn ? ["fold", "call"] : ["fold", "call", "raise"])
       : sc.stage === "rfi" ? (sc.heroPos === "BB" && sc.limpers ? ["limp", ...openIds(sc.bbv || 2, sc.hu)] : ["fold", "limp", ...openIds(sc.bbv || 2, sc.hu)])
       : sc.stage === "vsOpen" ? ["fold", "call", "raiseS", "raiseB"]
       : ["fold", "call", "raise"])

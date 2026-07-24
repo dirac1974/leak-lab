@@ -16,7 +16,7 @@ fs.cpSync(path.join(root, "src"), tmp, { recursive: true });
 fs.copyFileSync(path.join(tmp, "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
-  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, mcEquity, jamEquity, EQUITY_MODEL_V, dailyRollup };\n");
+  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, mcEquity, jamEquity, EQUITY_MODEL_V, dailyRollup, continuation, genScenario, heroBetOpts, openIds, AGG_STAGES };\n");
 esbuild.buildSync({
   entryPoints: [path.join(tmp, "probe.jsx")], bundle: true, format: "cjs",
   jsx: "automatic", loader: { ".jsx": "jsx" }, external: ["react", "react/jsx-runtime"],
@@ -53,6 +53,10 @@ const SPOTS = [
   ["riverBet vs station", "riverBet", { tb: "ahi", spr: 4, vilBet: { f: 0.12, c: 0.83 } }],
   ["riverCall 150%", "riverCall", { tb: "low", spr: 2, frac: 1.5 }],
   ["vsJam", "vsJam", {}],
+  ["vsRaise ahi", "vsRaise", { tb: "ahi", spr: 5 }],
+  ["vsRaise wet shallow", "vsRaise", { tb: "wet", spr: 2 }],
+  ["vsRaise all-in", "vsRaise", { tb: "ahi", spr: 5, allIn: true }],
+  ["vsRaise vs maniac raiser", "vsRaise", { tb: "ahi", spr: 5, raiseF: 0.3 }],
 ];
 const round2 = (x) => (typeof x === "number" ? Math.round(x * 100) / 100 : x);
 const snap = {};
@@ -245,6 +249,69 @@ ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) ==
   ok("dailyRollup keeps distinct days", roll[1].acc === 50 && roll[1].n === 20);
   ok("dailyRollup sorts by time + sums hands", roll[0].t < roll[1].t && roll[0].hands === 7);
   ok("dailyRollup empty passthrough", M.dailyRollup([]).length === 0);
+}
+
+/* ---- 8. vsRaise: directional invariants for the new facing-a-raise stage ---- */
+{
+  const zR = (ctx) => M.zonesFor("vsRaise", ctx);
+  const base = zR({ tb: "ahi", spr: 5 });
+  ok("vsRaise shape raise/call/fold", base.length === 3 && base[0].a === "raise" && base[1].a === "call" && base[2].a === "fold");
+  ok("vsRaise wet continues wider than dry", zR({ tb: "wet", spr: 5 })[1].to > base[1].to);
+  ok("vsRaise shallow widens the jam band", zR({ tb: "ahi", spr: 1.5 })[0].to > zR({ tb: "ahi", spr: 8 })[0].to);
+  ok("vsRaise frequent raiser paid off wider", zR({ tb: "ahi", spr: 5, raiseF: 0.3 })[1].to > zR({ tb: "ahi", spr: 5, raiseF: 0.08 })[1].to);
+  ok("vsRaise gto-anchored raiser = default chart", JSON.stringify(zR({ tb: "ahi", spr: 5, raiseF: M.PROF.gto.vsBet.r })) === JSON.stringify(base));
+  ok("vsRaise continue tighter than vsCbet", base[1].to < M.zonesFor("vsCbet", { tb: "ahi", spr: 5 })[1].to);
+  const zi = zR({ tb: "ahi", spr: 5, allIn: true });
+  ok("vsRaise all-in collapses to call/fold", zi.length === 2 && zi[0].a === "call" && zi[1].a === "fold");
+  ok("vsRaise all-in call band sits between jam and call boundaries", zi[0].to >= base[0].to && zi[0].to <= base[1].to + 1e-9);
+}
+
+/* ---- 9. Complete-the-hand invariant: no continuation may dead-end ----
+   Every action from every reachable stage must either settle the hand (result)
+   or hand back a next decision (nextSc) — the "hand logged" stubs are gone. */
+{
+  const CFG = { mode: "9max", hu: "tag", seats: ["nit", "reg", "lag", "station", "maniac", "tag", "station", "nit", "reg"], stake: 0, stack: 2, image: "unknown", play: "drill" };
+  const pickAction = (sc) => {
+    if (M.AGG_STAGES.includes(sc.stage)) {
+      const opts = M.heroBetOpts(sc).map((o) => o.id);
+      // bias toward betting so villain raises (the new vsRaise path) get exercised
+      return Math.random() < 0.8 && opts.length ? opts[(Math.random() * opts.length) | 0] : "check";
+    }
+    if (sc.stage === "rfi") { const pool = [...M.openIds(sc.bbv || 2, sc.hu), "limp", "fold"]; return pool[(Math.random() * pool.length) | 0]; }
+    if (sc.stage === "vsOpen") { const pool = ["fold", "call", "raiseS", "raiseB"]; return pool[(Math.random() * pool.length) | 0]; }
+    if (sc.stage === "riverCall" || sc.stage === "vsJam") return Math.random() < 0.5 ? "call" : "fold";
+    // defender stages incl. vsRaise: bias toward call/raise so hands keep going
+    const pool = ["call", "raise", "call", "fold"];
+    return pool[(Math.random() * pool.length) | 0];
+  };
+  let walks = 0, steps = 0, deadEnds = 0, stubText = 0, unterminated = 0, sawVsRaise = 0, vsRaiseResolved = 0;
+  for (let w = 0; w < 400; w++) {
+    let sc = M.genScenario(CFG, null);
+    let done = false;
+    for (let s = 0; s < 15; s++) {
+      steps++;
+      const a = pickAction(sc);
+      let cont;
+      try { cont = M.continuation(sc, a, 2); } catch (e) { deadEnds++; done = true; break; }
+      if (/hand logged|roadmap|lands next/i.test(cont.text || "")) stubText++;
+      if (cont.nextSc) {
+        if (cont.nextSc.stage === "vsRaise") sawVsRaise++;
+        sc = cont.nextSc;
+        continue;
+      }
+      if (cont.result == null) deadEnds++;
+      else if (sc.stage === "vsRaise") vsRaiseResolved++;
+      done = true;
+      break;
+    }
+    if (!done) unterminated++;
+    walks++;
+  }
+  ok("walks ran", walks === 400);
+  ok(`no dead-ends in ${steps} continuation steps`, deadEnds === 0, `${deadEnds} continuations returned neither result nor nextSc (or threw)`);
+  ok("no 'hand logged' stub text remains", stubText === 0, `${stubText} stub texts seen`);
+  ok("every walk terminates within 15 decisions", unterminated === 0, `${unterminated} walks still going`);
+  ok(`vsRaise reached organically (${sawVsRaise}x) and resolves`, sawVsRaise >= 3 && vsRaiseResolved >= 1, `saw ${sawVsRaise}, resolved ${vsRaiseResolved}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

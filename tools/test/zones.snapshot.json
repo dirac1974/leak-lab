@@ -457,5 +457,68 @@
    "from": 3.96,
    "to": 100
   }
+ ],
+ "vsRaise ahi": [
+  {
+   "a": "raise",
+   "from": 0,
+   "to": 5.95
+  },
+  {
+   "a": "call",
+   "from": 5.95,
+   "to": 21.9
+  },
+  {
+   "a": "fold",
+   "from": 21.9,
+   "to": 100
+  }
+ ],
+ "vsRaise wet shallow": [
+  {
+   "a": "raise",
+   "from": 0,
+   "to": 10.78
+  },
+  {
+   "a": "call",
+   "from": 10.78,
+   "to": 45.42
+  },
+  {
+   "a": "fold",
+   "from": 45.42,
+   "to": 100
+  }
+ ],
+ "vsRaise all-in": [
+  {
+   "a": "call",
+   "from": 0,
+   "to": 18.61
+  },
+  {
+   "a": "fold",
+   "from": 18.61,
+   "to": 100
+  }
+ ],
+ "vsRaise vs maniac raiser": [
+  {
+   "a": "raise",
+   "from": 0,
+   "to": 5.95
+  },
+  {
+   "a": "call",
+   "from": 5.95,
+   "to": 30.57
+  },
+  {
+   "a": "fold",
+   "from": 30.57,
+   "to": 100
+  }
  ]
 }
