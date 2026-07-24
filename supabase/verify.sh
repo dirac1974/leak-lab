@@ -29,12 +29,22 @@ check "ll_sessions SELECT denied (anon)" 401 "$(code "$API/ll_sessions?select=n&
 check "ll_sessions INSERT denied (anon)" 401 "$(code -X POST "$API/ll_sessions" -H "apikey: $KEY" \
   -H 'Content-Type: application/json' -d '{"n":1,"acc":1,"ev":0,"ev_per":0}')"
 
+# Equity samples: contributable, never readable (same posture as telemetry).
+check "ll_equity_samples INSERT (anon)" 201 "$(code -X POST "$API/ll_equity_samples" -H "apikey: $KEY" \
+  -H 'Content-Type: application/json' -H 'Prefer: return=minimal' \
+  -d '{"k":"1|nit|flop|verify","rv":1,"wins":1,"ties":0,"n":1,"sid":"verify-script"}')"
+check "ll_equity_samples SELECT denied" 401 "$(code "$API/ll_equity_samples?select=k&limit=1" -H "apikey: $KEY")"
+# Equity cache: publicly readable (RLS returns only confirmed rows), never writable by the app key.
+check "ll_equity_cache SELECT allowed" 200 "$(code "$API/ll_equity_cache?select=k&limit=1" -H "apikey: $KEY")"
+check "ll_equity_cache INSERT denied" 401 "$(code -X POST "$API/ll_equity_cache" -H "apikey: $KEY" \
+  -H 'Content-Type: application/json' -d '{"k":"x","rv":1,"equity":0.5,"n":1}')"
+
 # Nothing else should be reachable or even advertised.
 echo "  --- exposed tables in the public API schema ---"
 curl -s "$API/" -H "apikey: $KEY" | node -e "
 let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{
   try { const j=JSON.parse(d); const t=Object.keys(j.paths||{}).filter(p=>p!=='/').map(p=>p.slice(1));
-    const extra=t.filter(x=>!['ll_events','ll_sessions'].includes(x));
+    const extra=t.filter(x=>!['ll_events','ll_sessions','ll_equity_samples','ll_equity_cache'].includes(x));
     console.log('        '+(t.join(', ')||'(none)'));
     console.log(extra.length ? '  FAIL  unexpected tables exposed: '+extra.join(', ') : '  ok    only Leak Lab tables exposed');
     process.exit(extra.length?1:0);
