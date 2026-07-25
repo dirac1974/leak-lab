@@ -302,10 +302,21 @@ function zonesFor(stage, ctx) {
       wet: { v: 33, mid: 60, bl: 76, r: 19, c: 55 },
       mono: { v: 30, mid: 62, bl: 72, r: 12, c: 50 },
     }[ctx.tb] || { v: 36, mid: 60, bl: 80, r: 15, c: 58 };
+    // When even the smallest sizing is all-in, every bet is a shove: there is no
+    // sizing choice to grade and the price — not the strength bands — decides.
+    const jamOnly = (str) => spr > 0 && spr <= SIZES[str].s * 1.02;
+    const jamZones = (str, floorTo) => {
+      const to = Math.max(floorTo, priceFloor(spr, PRICE_MARGIN_BET));
+      const amt = pctLbl(spr);
+      return to >= 99.5
+        ? [{ a: "bet", sz: "b", sizes: ["b", "s"], lbl: `ALL-IN ${amt}`, from: 0, to: 100 }]
+        : [{ a: "bet", sz: "b", sizes: ["b", "s"], lbl: `ALL-IN ${amt}`, from: 0, to }, { a: "check", from: to, to: 100 }];
+    };
     if (stage === "cbet" || stage === "barrel") {
       const st = stage === "barrel" ? 5 : 0;
       const street = stage === "barrel" ? "turn" : "flop";
       const v = Math.max(6, (B.v - st + (ctx.ip ? 2 : -3) + sh - dp - mwV) * vF);
+      if (jamOnly(street)) return jamZones(street, v);
       const bl = Math.max(B.mid, B.mid + (B.bl - st - (ctx.ip ? 0 : 5) - B.mid) * mwBl * bfF);
       const polar = stage === "barrel" || ctx.tb === "wet" || ctx.tb === "mono";
       const L = (sz) => `BET ${pctLbl(SIZES[street][sz])}`;
@@ -324,6 +335,12 @@ function zonesFor(stage, ctx) {
       // concept; with players still in, someone else can have it.
       const r = Math.max(3, (B.r - st * 4 + sh * 0.5) * (1 + (baseF - frac) * 0.5) * (mw > 1 ? 0.8 : 1));
       const c = Math.max(r + 8, Math.min(80, (B.c - st * 10 + sh * 0.8) * mdf * mwC * cbF));
+      // Their bet covers hero: calling closes the action, so it's a pure pot-odds
+      // call-off — no raise exists, and the price sets how wide hero continues.
+      if (spr > 0 && spr <= frac * 1.02) {
+        const cAll = Math.max(c, priceFloor(Math.min(frac, spr), PRICE_MARGIN_CALL));
+        return [{ a: "call", from: 0, to: cAll }, { a: "fold", from: cAll, to: 100 }];
+      }
       return [{ a: "raise", from: 0, to: r }, { a: "call", from: r, to: c }, { a: "fold", from: c, to: 100 }];
     }
     if (stage === "vsRaise") {
@@ -342,7 +359,13 @@ function zonesFor(stage, ctx) {
         // Their raise is all-in: no re-raise exists, and draws realize fully — the
         // jam band folds into a single call band, slightly tighter than vs a raise
         // that still leaves chips behind.
-        const cAll = Math.max(j + 3, c * 0.85);
+        // Calling closes the action, so the price REPLACES the strength heuristic
+        // (not just widens it): a cheap call-off is near-automatic, an expensive one
+        // is near-nuts-only. Priced on what hero actually owes (ctx.callFrac), not
+        // their whole stack. The jam band is the floor — the nuts always call.
+        const cAll = ctx.callFrac != null
+          ? Math.max(j, priceFloor(ctx.callFrac, PRICE_MARGIN_CALL))
+          : Math.max(j + 3, c * 0.85);
         return [{ a: "call", from: 0, to: cAll }, { a: "fold", from: cAll, to: 100 }];
       }
       return [{ a: "raise", from: 0, to: j }, { a: "call", from: j, to: c }, { a: "fold", from: c, to: 100 }];
@@ -362,11 +385,14 @@ function zonesFor(stage, ctx) {
       const lead = gave
         ? Math.max(20, Math.min(62, (44 + sh * 1.2 + (ctx.tb === "wet" || ctx.tb === "low" ? 4 : 0)) * (mw > 1 ? 0.8 : 1)))
         : Math.max(0, (((ctx.tb === "low" || ctx.tb === "wet") ? 5 : 0) + sh * 0.4) * (mw > 1 ? 0.6 : 1));
+      // Shoving the last few bb into a big pot is the same price question here.
+      if (jamOnly(street)) return jamZones(street, lead);
       if (lead <= 0.5) return [{ a: "check", from: 0, to: 100 }];
       return [{ a: "bet", sz: "s", sizes: gave ? ["s", "b"] : ["s"], lbl: L("s"), from: 0, to: lead }, { a: "check", from: lead, to: 100 }];
     }
     if (stage === "riverBet") {
       const v = Math.max(10, (36 + sh * 0.5 - dp - mwV) * vF);
+      if (jamOnly("river")) return jamZones("river", v);
       const nut = Math.max(6, Math.min(13, v - 1));
       const blTo = Math.min(92, 78 + 12 * mwBl * bfF); // river bluffs scale with who's folding
       return [
@@ -378,7 +404,9 @@ function zonesFor(stage, ctx) {
       ];
     }
     const frac = ctx.frac == null ? 0.75 : ctx.frac;
-    const c = Math.min(80, (47 + sh * 0.6) * ((1 / (1 + frac)) / (1 / 1.75)) * mwC * cbF);
+    let c = Math.min(80, (47 + sh * 0.6) * ((1 / (1 + frac)) / (1 / 1.75)) * mwC * cbF);
+    // riverCall vs a bet that covers hero: pure pot odds, nothing left to play for.
+    if (spr > 0 && spr <= frac * 1.02) c = Math.max(c, priceFloor(Math.min(frac, spr), PRICE_MARGIN_CALL));
     return [{ a: "call", from: 0, to: c }, { a: "fold", from: c, to: 100 }];
   }
   const jz = stackoffZones(ctx.jamRep, ctx.effAgg, true);
@@ -582,18 +610,42 @@ function betInfo(sc, frac) {
   const f = frac != null ? frac : sc.vFrac != null ? sc.vFrac : POSTBET[sc.street];
   const eff = sc.effBB == null ? 9999 : sc.effBB;
   const b = chipBB(f * sc.potBB, bbv);
-  if (b >= eff - 0.01) return { b: eff, allIn: true, frac: f };
+  // Capped by the effective stack = all-in for less, and the true price is what's
+  // actually in front of hero, not the size the villain wanted to make.
+  if (b >= eff - 0.01) return { b: eff, allIn: true, frac: sc.potBB > 0 ? eff / sc.potBB : f };
   return { b, allIn: false, frac: f };
 }
 /* Hero's bet menu for aggressor spots; sizes merge into one all-in when the stack collapses them */
+/* Price floor for decisions that CLOSE the action (all-in either way).
+   With no further streets there is no raise risk and equity realizes fully, so pot
+   odds decide the spot exactly and the heuristic strength bands stop being the
+   authority: putting in `a` when the pot is `p` needs equity a/(p+2a), and the
+   engine's own proxy for a hand at percentile x is (100−x)/100 — the same proxy
+   continuation() settles showdowns with — so every hand up to 100·(1−need) clears
+   the price. The pot-odds part is an identity (5.5bb into 73.5bb needs 6.5%, which
+   is why shoving there is close to automatic); `margin` > 1 demands a multiple of
+   that price before the band opens, because the percentile proxy is optimistic for
+   weak hands and a shove should not be endorsed on a rounding error. Margins are
+   authored, NOT Stats-signed — they want a walk-forward reference. */
+function priceFloor(aOverP, margin) {
+  if (!(aOverP > 0)) return 0;
+  const need = (aOverP / (1 + 2 * aOverP)) * (margin == null ? 1 : margin);
+  return Math.max(0, Math.min(96, 100 * (1 - need)));
+}
+const PRICE_MARGIN_BET = 1.6;  // shoving: fold equity helps, proxy optimism hurts more
+const PRICE_MARGIN_CALL = 1.25; // calling off: no fold equity, pure showdown price
 function heroBetOpts(sc) {
   const bv = sc.bbv || 2;
   const cap = (f) => Math.min(sc.effBB, chipBB(f * sc.potBB, bv));
   const bs = cap(SIZES[sc.street].s), bb2 = cap(SIZES[sc.street].b);
-  if (bb2 - bs < 0.01) return [{ id: "betB", b: bb2, frac: SIZES[sc.street].b, allIn: true }];
+  // frac is the fraction of the pot that ACTUALLY goes in. A stack-capped bet is a
+  // small bet, not the sizing hero asked for — reporting the intended fraction is
+  // what let a forced 15%-pot shove be graded (and responded to) as a 125% barrel.
+  const fr = (x) => (sc.potBB > 0 ? x / sc.potBB : SIZES[sc.street].s);
+  if (bb2 - bs < 0.01) return [{ id: "betB", b: bb2, frac: fr(bb2), allIn: true }];
   return [
-    { id: "betS", b: bs, frac: SIZES[sc.street].s, allIn: bs >= sc.effBB - 0.01 },
-    { id: "betB", b: bb2, frac: SIZES[sc.street].b, allIn: bb2 >= sc.effBB - 0.01 },
+    { id: "betS", b: bs, frac: fr(bs), allIn: bs >= sc.effBB - 0.01 },
+    { id: "betB", b: bb2, frac: fr(bb2), allIn: bb2 >= sc.effBB - 0.01 },
   ];
 }
 
@@ -2750,7 +2802,7 @@ export default function App() {
 
   const act = (a) => {
     const post = POST_STAGES.includes(sc.stage);
-    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, street: sc.street, gaveUp: sc.gaveUp, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
+    const zones = zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, callFrac: sc.stage === "vsRaise" && sc.potBB > 0 ? betInfo(sc).b / sc.potBB : undefined, street: sc.street, gaveUp: sc.gaveUp, ...dynCtx(sc), spr: post && sc.effBB != null ? sc.effBB / sc.potBB : undefined });
     const pct = post ? sc.cls.rank : sc.hand.pct;
     const g = (sc.stage === "vsJam" || sc.stage === "vs4bet") ? gradeStackoff(zones, pct, a, sc) : AGG_STAGES.includes(sc.stage) ? gradeSized(zones, pct, a, sc.potBB) : (sc.stage === "rfi" || sc.stage === "vsOpen") ? gradeRaise(zones, pct, a) : grade(zones, pct, a, post ? 6 : undefined);
     const cont = continuation(sc, a, bbv);
@@ -2821,11 +2873,14 @@ export default function App() {
   const openTrend = useMemo(() => (openLeak ? leakTrend(leakRecs, openLeak) : null), [openLeak, leakRecs]);
   const isPost = sc ? POST_STAGES.includes(sc.stage) : false;
   const scPct = sc ? (isPost ? sc.cls.rank : sc.hand.pct) : 0;
-  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, street: sc.street, gaveUp: sc.gaveUp, ...dynCtx(sc), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
+  const zones = sc ? zonesFor(sc.stage, { hu: sc.hu, mode: sc.mode, rfiT: sc.rfiT, heroPos: sc.heroPos, openerPos: sc.openerPos, bbv: sc.bbv, openBB: sc.openBB, tb: sc.tb, ip: sc.ip, frac: sc.vFrac, limpers: sc.limpers, callers: sc.coldCallers ? sc.coldCallers.length : 0, mw: sc.field && sc.field.length ? sc.field.length : (sc.defMw || 1), effOpp: sc.effPre, aggPos: sc.aggPos, effAgg: sc.aggStk != null ? Math.min(sc.S, sc.aggStk) : undefined, jamRep: sc.aggP && sc.aggP.jamRep, raiseF: sc.stage === "vsRaise" && sc.aggP ? sc.aggP.vsBet.r : undefined, allIn: sc.stage === "vsRaise" ? betInfo(sc).allIn : undefined, callFrac: sc.stage === "vsRaise" && sc.potBB > 0 ? betInfo(sc).b / sc.potBB : undefined, street: sc.street, gaveUp: sc.gaveUp, ...dynCtx(sc), spr: isPost && sc.effBB != null ? sc.effBB / sc.potBB : undefined }) : [];
   const acts = sc
     ? (AGG_STAGES.includes(sc.stage) ? ["check", ...heroBetOpts(sc).map((o) => o.id)]
       : sc.stage === "riverCall" || sc.stage === "vsJam" ? ["fold", "call"]
       : sc.stage === "vsRaise" ? (betInfo(sc).allIn ? ["fold", "call"] : ["fold", "call", "raise"])
+      // Facing a bet that covers you, there is nothing to raise with — offering it
+      // would grade a button the hand can't actually make.
+      : (sc.stage === "vsCbet" || sc.stage === "vsBarrel") && betInfo(sc).allIn ? ["fold", "call"]
       : sc.stage === "rfi" ? (sc.heroPos === "BB" && sc.limpers ? ["limp", ...openIds(sc.bbv || 2, sc.hu)] : ["fold", "limp", ...openIds(sc.bbv || 2, sc.hu)])
       : sc.stage === "vsOpen" ? ["fold", "call", "raiseS", "raiseB"]
       : ["fold", "call", "raise"])

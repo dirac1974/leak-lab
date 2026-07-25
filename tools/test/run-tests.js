@@ -16,7 +16,7 @@ fs.cpSync(path.join(root, "src"), tmp, { recursive: true });
 fs.copyFileSync(path.join(tmp, "leak-lab.jsx"), path.join(tmp, "src.jsx"));
 fs.writeFileSync(path.join(tmp, "probe.jsx"),
   fs.readFileSync(path.join(tmp, "src.jsx"), "utf8") +
-  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, bucketKeyOf, mcEquity, jamEquity, EQUITY_MODEL_V, dailyRollup, continuation, genScenario, genHand, heroBetOpts, openIds, AGG_STAGES, POS_BY_OFFSET };\n");
+  "\nexport { zonesFor, grade, gradeSized, gradeRaise, gradeStackoff, adviceFor, leakObs, leakTrend, leakTotals, bucketOf, winPMw, respondToBetStk, effVs, vilStk, mergeHist, applyBackup, PROF, PROFILES, PCT, RANKED, TABLES, defendChart, MIX, GTO_JAMREP, equityKey, boardEquity, bucketKeyOf, mcEquity, jamEquity, EQUITY_MODEL_V, dailyRollup, continuation, genScenario, genHand, heroBetOpts, openIds, AGG_STAGES, POS_BY_OFFSET, classify, textureBucket, priceFloor };\n");
 esbuild.buildSync({
   entryPoints: [path.join(tmp, "probe.jsx")], bundle: true, format: "cjs",
   jsx: "automatic", loader: { ".jsx": "jsx" }, external: ["react", "react/jsx-runtime"],
@@ -280,7 +280,19 @@ ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) ==
   ok("vsRaise continue tighter than vsCbet", base[1].to < M.zonesFor("vsCbet", { tb: "ahi", spr: 5 })[1].to);
   const zi = zR({ tb: "ahi", spr: 5, allIn: true });
   ok("vsRaise all-in collapses to call/fold", zi.length === 2 && zi[0].a === "call" && zi[1].a === "fold");
-  ok("vsRaise all-in call band sits between jam and call boundaries", zi[0].to >= base[0].to && zi[0].to <= base[1].to + 1e-9);
+  ok("vsRaise all-in call band is at least the jam band", zi[0].to >= base[0].to && zi[0].to <= 96 + 1e-9);
+  // Price awareness: a cheap call-off widens the band; an expensive one must not.
+  // The price sets the band once the action closes: cheaper call-off → wider, and
+  // it must be monotonic in what hero actually owes (not their whole stack).
+  const cw = (cf) => M.zonesFor("vsRaise", { tb: "ahi", spr: 5, allIn: true, callFrac: cf })[0].to;
+  ok("vsRaise cheap call-off is near-automatic", cw(0.08) > 85, `${cw(0.08).toFixed(1)}`);
+  ok("vsRaise call band monotonic in price", cw(0.08) > cw(0.5) && cw(0.5) > cw(1.5) && cw(1.5) > cw(3), [0.08, 0.5, 1.5, 3].map((x) => cw(x).toFixed(0)).join(" > "));
+  // A pathological 8×-pot call-off tightens to ~41 rather than to the nuts: that is
+  // the documented optimism of the percentile proxy (rank 41 is treated as ~59%
+  // equity). Realistic vsRaise call prices are ~0.2–0.6 pot, where the proxy is
+  // conservative against the MC (a rank-72 draw measured 33–50%), so this bound is
+  // deliberately loose rather than pretending the axis is sharper than it is.
+  ok("vsRaise huge call-off tightens materially", cw(8) < 45 && cw(8) < cw(0.5) - 20, `${cw(8).toFixed(1)}`);
 }
 
 /* ---- 9. Complete-the-hand invariant: no continuation may dead-end ----
@@ -422,6 +434,79 @@ ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) ==
     else { ok("flop c-bet call must reach a turn decision", false, c2.text); break; }
   }
   ok(`flop c-bet call reached a turn decision every time (${contTurn} runs)`, contTurn > 0);
+}
+
+/* ---- 12. Commitment / price consistency (GENERAL) ----
+   The reported hand: 5.5bb behind, 73.5bb pot, AK-high + gutshot — the chart said
+   "check" and charged a 1.24bb leak for shoving, when the shove needs 6.5% equity
+   and has ~33–50% (MC-verified). Root cause: the strength bands barely moved with
+   stack depth, so nothing in the model knew hero was committed.
+
+   These checks are deliberately stage-agnostic: they sweep EVERY postflop stage ×
+   texture × depth and assert the price property, so the same blind spot can't
+   reappear on a path someone adds later. */
+{
+  const TEXTURES = ["ahi", "bwy", "paired", "low", "wet", "mono"];
+  const AGG = ["cbet", "barrel", "riverBet", "donk"];
+  const DEF = ["vsCbet", "vsBarrel", "riverCall"];
+  const streetOfStage = (s) => (s === "cbet" ? "flop" : s === "riverBet" || s === "riverCall" ? "river" : "turn");
+  const bandTop = (zs, act) => zs.filter((z) => z.a === act).reduce((m, z) => Math.max(m, z.to), 0);
+
+  // A. Aggressor: when the whole stack is a small fraction of the pot, shoving must
+  //    be the chart's action for any hand that clears the price with margin.
+  let aggBad = 0;
+  for (const stage of AGG) for (const tb of TEXTURES) for (const spr of [0.05, 0.075, 0.1, 0.15, 0.25]) {
+    const zs = M.zonesFor(stage, { tb, ip: false, spr, street: streetOfStage(stage), mw: 1, gaveUp: stage === "donk" ? false : undefined });
+    const need = spr / (1 + 2 * spr);
+    const clears = 100 * (1 - need * 2.2); // comfortably clears the price (2.2× the odds)
+    const z = zs.find((x) => clears >= x.from && clears < x.to) || zs[zs.length - 1];
+    if (z.a !== "bet") { aggBad++; if (aggBad === 1) console.log(`    e.g. ${stage}/${tb} spr ${spr}: pct ${clears.toFixed(0)} → "${z.a}"`); }
+  }
+  ok("committed stacks shove: every aggressor stage × texture × depth", aggBad === 0, `${aggBad} spots still said check`);
+
+  // B. Defender: when their bet covers hero, calling is a pure pot-odds call-off.
+  let defBad = 0;
+  for (const stage of DEF) for (const tb of TEXTURES) for (const frac of [0.5, 0.75, 1.25]) for (const spr of [0.05, 0.1, 0.2]) {
+    const zs = M.zonesFor(stage, { tb, spr, frac, street: streetOfStage(stage), mw: 1 });
+    const a = Math.min(frac, spr), need = a / (1 + 2 * a);
+    const clears = 100 * (1 - need * 2.2);
+    const z = zs.find((x) => clears >= x.from && clears < x.to) || zs[zs.length - 1];
+    if (z.a !== "call") { defBad++; if (defBad === 1) console.log(`    e.g. ${stage}/${tb} frac ${frac} spr ${spr}: pct ${clears.toFixed(0)} → "${z.a}"`); }
+    // Facing a bet that covers you, "raise" must not exist in the chart.
+    if (bandTop(zs, "raise") > 0) { defBad++; }
+  }
+  ok("covered defenders call by price, and no phantom raise band", defBad === 0, `${defBad} violations`);
+
+  // C. Monotonicity: getting shorter never narrows the value band. Measured on the
+  //    leading bet zone only — riverBet's chart also carries a separate high-end
+  //    bluff region, and mixing the two would compare different things.
+  const valueTop = (zs) => (zs[0] && zs[0].a === "bet" ? zs[0].to : 0);
+  let mono = 0;
+  for (const stage of AGG) for (const tb of TEXTURES) {
+    let prev = null;
+    for (const spr of [0.05, 0.1, 0.2, 0.4, 0.8, 1.5, 3, 6]) {
+      const t = valueTop(M.zonesFor(stage, { tb, ip: false, spr, street: streetOfStage(stage), mw: 1, gaveUp: stage === "donk" ? false : undefined }));
+      if (prev != null && t > prev + 1e-9) mono++;
+      prev = t;
+    }
+  }
+  ok("value band never widens as stacks get deeper", mono === 0, `${mono} inversions`);
+
+  // D. The reported hand, end to end: shove is best, check is the leak.
+  {
+    const hero = [C(14, "d"), C(13, "s")], board = [C(4, "h"), C(2, "s"), C(10, "h"), C(12, "d")];
+    const cls = M.classify(hero, board);
+    const potBB = 73.5, effBB = 5.5;
+    const sc = { stage: "barrel", street: "turn", hu: false, mode: "9max", S: 100, bbv: 2, potBB, effBB, heroPos: "SB", ip: false,
+      cls, tb: M.textureBucket(board), board, hand: { cards: hero, label: "AKo", pct: 2.4 },
+      vil: { pos: "BB", p: M.PROF.station, stk: 157 }, field: [{ pos: "BB", p: M.PROF.station, stk: 157 }], villains: [{ pos: "BB", p: M.PROF.station, stk: 157 }] };
+    const zs = M.zonesFor("barrel", { tb: sc.tb, ip: false, spr: effBB / potBB, street: "turn", mw: 1 });
+    const opts = M.heroBetOpts(sc);
+    ok("reported hand: only an all-in is available", opts.length === 1 && opts[0].allIn);
+    ok("reported hand: capped bet reports its TRUE pot fraction", Math.abs(opts[0].frac - effBB / potBB) < 1e-9, `${opts[0].frac}`);
+    ok("reported hand: shoving AK-high+gutshot grades best", M.gradeSized(zs, cls.rank, opts[0].id, potBB).verdict === "best");
+    ok("reported hand: checking is now the leak", M.gradeSized(zs, cls.rank, "check", potBB).verdict === "miss");
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
