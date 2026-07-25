@@ -8,7 +8,7 @@ GitHub Pages on a private repo needs a paid plan, and its required `_github-page
 ---
 
 ## What's already done (repo side)
-- `npm run build` emits a clean `_site/` — only `index.html`, `sw.js`, `manifest.webmanifest`, and the three icons. No `src/`, `tools/`, `node_modules/`, or `.git/` are ever served.
+- `npm run build` emits a clean `_site/` — only `index.html`, `equity-worker.js`, `sw.js`, `manifest.webmanifest`, and the three icons. No `src/`, `tools/`, `node_modules/`, or `.git/` are ever served. (`equity-worker.js` must stay a real same-origin file: the CSP is `worker-src 'self'`, so the background sampler can't be an inlined blob.)
 - `_site/_headers` ships a strict CSP (script-src locked to per-build hashes; connect-src limited to self + the Supabase project), plus `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, `COOP`.
 - The served files contain **no** reference to your GitHub username or repo. README's live-URL line is scrubbed.
 - Relative asset paths (`./sw.js`, `manifest.webmanifest`, icons) work at a domain root, so no `/leak-lab/` subpath assumptions remain.
@@ -32,6 +32,8 @@ GitHub Pages on a private repo needs a paid plan, and its required `_github-page
 **6. Make the repo private** — GitHub → Settings → Danger Zone → Change visibility → Private. **Do this only after Cloudflare Pages is confirmed serving**, because it immediately stops the free GitHub Pages deploy.
 
 **7. Retire GitHub Pages** — Settings → Pages → Source → None, and delete `.github/workflows/pages.yml` (Cloudflare now owns the build). Optional: keep the workflow as a test-only CI on private repos (free Actions minutes).
+
+> **Note on the second workflow.** `.github/workflows/aggregate-equity.yml` (nightly equity aggregation) commits a regenerated `src/data/equity-cache.js` and relies on a push to `main` triggering a deploy. It is independent of *where* the site is hosted, but if you move to Cloudflare Pages, make sure that push still triggers the Cloudflare build — otherwise freshly confirmed equities sit in the repo unshipped. It needs the `SUPABASE_SERVICE_ROLE_KEY` **Actions** repository secret (see `supabase/README.md`); without it the run soft-skips and stays green.
 
 ## What I verify after (send me the domain)
 - `dig yourdomain.com` shows Cloudflare, not github.io — no username in any DNS record.

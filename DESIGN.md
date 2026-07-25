@@ -1,6 +1,8 @@
 # Leak Lab — Design & Architecture
 
-This document is the map of how Leak Lab works: the agent/data-model design, the engine layers, and the flow of a single hand from deal to grade. Read it before extending the app — every piece lives in one file (`src/leak-lab.jsx`), organized into the labeled sections described below.
+This document is the map of how Leak Lab works: the agent/data-model design, the engine layers, and the flow of a single hand from deal to grade. Read it before extending the app.
+
+Nearly everything lives in one file (`src/leak-lab.jsx`), organized into the labeled sections described below. The exceptions, all deliberate: `src/mc-engine.js` (React-free poker maths, shared with the worker), `src/equity-worker.js` (background sampler), `src/data/*.js` (generated tables — `jam-equity.js`, `equity-cache.js`), `src/supabase-config.json` (project coordinates, read by both the client and `build.js`), and `src/fonts-gen.js`. Section 13 covers the crowd-solver pipeline that spans the app, `tools/sim/`, and CI.
 
 ---
 
@@ -154,7 +156,12 @@ continuation(action) ──► narration + optional nextSc
 
 ## 7. Build & bundling
 
-There is no framework. `src/entry.jsx` mounts `App` from `src/leak-lab.jsx`. The build is a single `esbuild` bundle+minify pass whose output is inlined into `index.html` (see `package.json`). The result is one self-contained HTML file with React bundled in — no external requests, trivially hostable on GitHub Pages or any static host.
+There is no framework. `src/entry.jsx` mounts `App` from `src/leak-lab.jsx`. The build is two `esbuild` bundle+minify passes (see `package.json`), then `node build.js`:
+
+1. **The app** — inlined into `index.html` as a hash-pinned inline `<script>`, so the page is one self-contained HTML file with React bundled in, no external requests.
+2. **The background equity worker** — `src/equity-worker.js` → `equity-worker.js` (repo root + `_site/`). It must be a real same-origin file because the CSP is `worker-src 'self'` (no `blob:`); it shares the Monte-Carlo engine with the app via `src/mc-engine.js` (React-free, imported by both).
+
+`build.js` also writes the strict CSP (recomputing the script hashes every build), reads the Supabase origin from `src/supabase-config.json` for `connect-src`, and assembles `_site/` — the only files ever served (see `DEPLOY.md`).
 
 ---
 
@@ -162,7 +169,7 @@ There is no framework. `src/entry.jsx` mounts `App` from `src/leak-lab.jsx`. The
 
 - **New opponent archetype** → add to `PROFILES`.
 - **Solver-exact postflop** → replace the per-archetype base tables inside `zonesFor()` with values from GTO Wizard / Pio aggregate exports (the structure already matches: value / check / bluff regions per texture, with size sets).
-- **Raise-defense drills** → add stages to `POST_STAGES`, extend `zonesFor()` and `continuation()` for facing raises.
+- **Raise-defense drills** → ✅ shipped (v1.4): `vsRaise` (facing a raise of your bet, incl. the all-in variant) and `donk` (first to act without the lead / probing after they give up) are stages in `POST_STAGES` with their own `zonesFor()` branches and `continuation()` blocks. The same recipe extends to any new node: add to `POST_STAGES` (+`AGG_STAGES` if hero can bet), a `zonesFor()` branch, a `continuation()` block, `facingInfo`/`contextLine`/`acts` for the UI, and a `leakKey` mapping.
 - **New stake** → add to `STAKES` with its blind size and chip increment.
 - **Persistence / saved lineups** → the config object (`cfg`) and session (`sess`) are the two things to serialize.
 
@@ -253,3 +260,27 @@ Live tables are stack mosaics, and stack depth changes correct play as much as p
 - **Priced-in behavior** (`respondToBetStk`): a bet over ~55% of a villain's remaining stack collapses their fold frequency ("nobody folds for $75 more"); a bet that covers them becomes a call all-in for less. All-in-for-less callers ride an `aiN` counter into every later showdown count — they can't fold, and the board runs out when no live stacks remain.
 - **Strategy shifts**: calling vs a short opener tightens ×0.75 (implied odds die); vs a 250bb+ effective it widens ×1.12 (speculative hands get paid). Very deep SPR tightens thin value harder (dp cap 4→6), and the coach warns that one pair stops being a stack-off past SPR ~13.
 - **UI**: stacks show on every villain chip and table seat, tinted short (red) / deep (green), and shrink street by street as chips go in.
+
+---
+
+## 13. Hand completeness & the crowd-solver pipeline (v1.5, 2026-07-24)
+
+### 13a. Every node is playable
+
+Two decision nodes used to be missing, and hands stopped when they came up. Both are stages now, so a hand only ends at a real poker terminal (fold, showdown, all-in run-out):
+
+- **`vsRaise`** — hero's bet gets raised. Zones jam the top, call strong hands and big draws, fold the rest; wet boards continue wider, shallow SPR widens the stack-off, and a high-frequency raiser (`ctx.raiseF` from the villain's `vsBet.r`) gets paid off wider — GTO-anchored, so a baseline raiser reproduces the default chart. `ctx.allIn` collapses the chart to call/fold. Amount owed comes from a `faceBB` branch in `betInfo()` (a raise increment, not a pot fraction).
+- **`donk`** — hero is first to act without the betting lead. Check-dominant against a live aggressor (a small lead band survives only on low/wet boards, wider when shallow); after the aggressor **gives up** (`ctx.gaveUp`), it becomes a wide probe (~44%) against a capped range. Entered on: calling a 3-bet or an open out of position, the in-position stab when the opener checks, and any street where the bettor slows down.
+
+The invariant that keeps this honest lives in `npm test`: two walk suites (400 drill + 200 full-hand `genHand` walks per run) assert every `continuation()` either returns a `result` or a `nextSc`, that walks terminate, and that no stub text survives. Both stages are reached organically by those walks.
+
+### 13b. Crowd-pooled board equity (shadow)
+
+Postflop jams are priced off `src/data/jam-equity.js`, a **preflop-only** MC curve — blind to the actual board. This pipeline closes that gap with real board equities pooled across devices:
+
+1. **Collect** — `src/equity-worker.js` (a Web Worker; shares `src/mc-engine.js` with the app) runs `mcEquity` on the postflop spot the user is on and posts raw `{wins, ties, n}` back. The page submits them anonymously to `ll_equity_samples` (insert-only; the app key can write but never read). Gated by the "SHARED SOLVER" toggle (on by default, `ll_contribute`), paused when the tab isn't visible.
+2. **Key** — `equityKey()` produces a canonical spot key, taking the lexicographically smallest label over all 24 suit permutations, so suit-isomorphic and reordered duplicates collapse into one key. `EQUITY_MODEL_V` versions the villain range model.
+3. **Bucket** — exact spots almost never repeat across users (~1M+ canonical flops per profile), so `bucketKeyOf()` also maps each spot to `profile × street × texture × strength-decile` — deliberately the same abstraction `zonesFor()` grades on. This is where pooling actually converges.
+4. **Confirm** — `tools/sim/aggregate-equity.js` (nightly CI) pools per-device-capped tallies, then publishes an **authoritative server-side recompute**, never the crowd's number (buckets: a weighted recompute of the most-observed member spots). A cell confirms only with enough trials from enough distinct devices *and* pool-vs-recompute agreement.
+5. **Ship** — `tools/sim/bake-equity-cache.js` writes confirmed rows into `src/data/equity-cache.js` (baked like `JAM_EQ`, zero runtime fetch); CI commits it, which deploys.
+6. **Read** — `boardEquity()` resolves exact hit → bucket hit → null, and `jamEquity()` prefers it over the preflop curve **only when `EQUITY_CACHE_LIVE` is true**. It is `false`: the whole pipeline collects and confirms without touching a single grade until the numbers are reviewed.

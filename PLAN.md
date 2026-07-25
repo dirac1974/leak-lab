@@ -177,6 +177,69 @@ The direct product answer to "how do I determine which style this player really 
 
 ---
 
+## Track D — Infrastructure, crowd-solver & hand-completeness (2026-07-22 → 07-24)
+
+Everything in this track is **shipped and live** unless marked otherwise. Live app: https://dirac1974.github.io/leak-lab/
+
+### D0 — Dedicated Supabase project ✅ done 2026-07-24
+- [x] App moved off the shared trading-bot project onto its own (`ybjfjezjditidhoocygc`). `src/supabase-config.json` is the single source of truth (client + CSP `connect-src` both read it).
+- [x] External posture re-verified holding only the publishable key: `bash supabase/verify.sh <url> <key>` → 9/9 (samples writable/not readable, cache readable/not writable, no unexpected tables exposed).
+- [x] Old project's `ll_events`/`ll_sessions` dropped; trading tables verified untouched.
+- [x] **Manual, still open:** Auth → URL Configuration on the new project (Site URL `https://dirac1974.github.io/leak-lab/` + redirect `…/**`). **Magic-link login is broken until this is set.** Everything else (anonymous play, telemetry, sampling) works without it.
+
+### D1 — Table sizes 5–10 max ✅ done 2026-07-23
+- [x] Positions/RFI generated from seat count + players-behind (`EP_NAMES`, `RFI_BY_BEHIND`); selector offers 10/9/8/7/6/5 plus Heads-up.
+- [x] 6-max and 9-max RFI rows kept **byte-identical** to the hand-tuned originals (`RFI_TUNED`) — no calibrated value changed.
+- [ ] **Owed:** Stats sign-off + walk-forward reference for the generated 5/7/8/10-max RFI rows (flagged in-code).
+
+### D2 — Crowd-pooled board equity (SHADOW — does not affect grading) 
+The accuracy play: postflop jams are currently priced off a **preflop-only** baked curve (`src/data/jam-equity.js`), which is blind to the actual board. This pipeline fixes that with real board equities, pooled across users.
+- [x] Tables live: `ll_equity_samples` (anonymous, insert-only, unreadable by the app key) + `ll_equity_cache` (only `confirmed` rows readable; writes are service-role only). Migration `supabase/migrations/0002_equity_cache.sql`.
+- [x] Canonical keys: `equityKey()` collapses suit-isomorphic/card-order duplicates (24 permutations, lexicographically smallest wins). `EQUITY_MODEL_V` versions the range model so stale samples are ignored.
+- [x] **Bucket aggregation** — the important design call. Exact spots almost never repeat across users (~1M+ canonical flops per profile), so samples also pool into `profile × street × texture × strength-decile` cells via `bucketKeyOf()` — the same abstraction the strategy zones grade on. `boardEquity()` looks up exact → bucket → null.
+- [x] Collection: on-device **Web Worker** (`src/equity-worker.js`, built to `equity-worker.js`; shares `src/mc-engine.js` with the app) samples the postflop spot the user is on. "SHARED SOLVER" toggle in Setup, **ON by default**, persisted as `ll_contribute`, paused whenever the tab isn't visible, ~24k trials/spot, capped per session.
+- [x] Aggregation: `.github/workflows/aggregate-equity.yml` (nightly 09:17 UTC + manual dispatch) → `npm run sim:aggregate` → `npm run bake:equity` → commits `src/data/equity-cache.js` → normal deploy. Verified authenticating in CI; soft-skips green without the secret.
+- [x] Trust model: the crowd only decides **which** cells are worth caching; the published number is always an **authoritative server-side recompute** (buckets: weighted recompute of up to `BUCKET_MEMBER_CAP` most-observed members, capping logged). Confirm requires `N_MIN` trials across `SID_MIN` distinct devices, per-device capped, and pool-vs-recompute agreement within `TOL`/`TOL_BUCKET`.
+- [ ] **Gate to go live:** `EQUITY_CACHE_LIVE = false` in `src/leak-lab.jsx`. Flip only after confirmed rows are baked **and** a walk-forward comparison (bucket equity vs preflop curve vs fresh MC on sampled members) looks sane, per the parameter-change rule. Note banked history is immutable, so bad grades can't be retro-fixed — that's why the look happens first.
+
+### D3 — Session auto-banking ✅ done 2026-07-24
+- [x] Auto-banks every **10 completed hands** (full mode) or **30 decisions** (drill), then rolls into a fresh session; leaving the training screen banks the trailing partial. Manual "Bank current session" button removed.
+- [x] Trend chart rolls records up to **one decision-weighted point per calendar day** (`dailyRollup`) — "ACCURACY BY DAY" — so frequent banking doesn't clutter it. Stat tiles still count raw sessions/decisions.
+
+### D4 — Hands always play to completion ✅ done 2026-07-24
+Three fixes, all driven by user reports, all fenced by permanent invariant tests:
+- [x] **vsRaise stage** — the two old "hand logged" dead-ends are gone. Villain raises hero's bet → real fold/call/jam decision (facing banner "RAISES TO / RAISES ALL-IN", to-call from the raise increment). Hero raises and villain continues → call gives hero the lead next street, re-jam becomes all-in vsRaise, called jam settles as a showdown.
+- [x] **BB check-option crash** — limped pots where hero holds the BB built a flop with no villain (`sc.vil` undefined), so the next tap threw and React silently dropped it: the hand appeared frozen. Bettor is now resolved by seat, not the literal `"BB"`.
+- [x] **donk/probe stage** — OOP hero now gets the real first-action decision (check or lead) instead of being auto-checked into the c-bet; and when the aggressor slows down, the next street becomes hero's probe decision instead of collapsing to an instant showdown. Also covers the in-position stab when the opener checks.
+- [ ] **Owed:** Stats sign-off + walk-forward for the `vsRaise` and `donk`/probe bands (authored, flagged in-code).
+- [ ] Known simplifications left: multiway pots still use the compressed flop flow (heads-up is fully expanded); no true side-pot accounting (approximated by showdown-count riders).
+
+### D5 — Test harness state
+`npm test` = **168 checks** (was 60 on 07-20) and blocks deploys. Layers: zone snapshots (`npm test -- write` to regenerate — verify the diff is additions-only), partition/GTO-anchoring invariants, metamorphic/directional swaps, coach-note-vs-grader consistency, stackoff pricing, `dailyRollup`, equity-cache keys + hierarchical lookup, and **two walk suites** (400 drill walks + 200 full-hand `genHand` walks per run) asserting every continuation settles or continues, terminates, and never dead-ends. Also: `npm run sim:aggregate -- --self-test` (16 checks, no DB/secret needed) and `npm run sim:oracle` (report-only MC audit).
+
+---
+
+## Handoff — start here in a new session
+
+**Read order:** this file → latest `MEMORY.md` entry → `supabase/README.md` (cutover + aggregator runbook) → `DEPLOY.md`.
+
+**Verify the tree is healthy:** `npm test` (expect 168 passing) and `npm run build`.
+
+**Three switches that are deliberately OFF, and what each needs:**
+1. `EQUITY_CACHE_LIVE` (`src/leak-lab.jsx`) — needs confirmed rows baked + walk-forward + Stats sign-off. See D2.
+2. Supabase **Auth URL config** — dashboard-only, David; magic-link login stays broken until then. See D0.
+3. `SUPABASE_SERVICE_ROLE_KEY` — ✅ now set as an **Actions** repository secret (a first attempt landed in Codespaces secrets, which Actions can't read; if aggregation ever "skips", check the tab). Nightly runs authenticate.
+
+**Next actions, in order:**
+1. **Watch the pool fill.** `select count(*), count(distinct k), count(distinct sid) from ll_equity_samples;` — buckets need ≥2 distinct devices, so a second device is what unblocks the first confirmations. Then dispatch the aggregate workflow and read its `buckets:` line.
+2. **Run the walk-forward comparison** once rows confirm, and take the `EQUITY_CACHE_LIVE` decision with it.
+3. **Clear the Stats-sign-off debt** (D1 RFI rows, D4 vsRaise + donk bands). Blocker worth knowing: the MC oracle can't audit postflop raise/lead decisions yet because profiles carry raise *frequencies*, not postflop raise *ranges* — modelling that is the prerequisite (open design item).
+4. **Then back to Track A/C** — A1 seeding is still the gate on all store spend; C1's pot-scaled postflop EV and C3 range-narrowing are the next product features.
+
+**Conventions that matter here:** feature branches + fast-forward merges to `main` (never force-push); every strategy-parameter change needs a Stats-sign-off note in a comment + walk-forward reference; new DB columns get listed explicitly in the commit message; shadow-mode first for anything that touches grading; secrets only ever in GitHub/Supabase secret stores.
+
+---
+
 ## Calendar (parallel tracks)
 
 | Month | Track A | Track B | Track C |
@@ -197,5 +260,11 @@ The direct product answer to "how do I determine which style this player really 
 | 2026-07-20 | React 19 vs 18 | **React 19** | matches production; package.json ^19.2.0 |
 | 2026-07-20 | Deploy source | **GitHub Actions workflow** | CI builds from src/; drift impossible |
 | 2026-07-20 | Positioning (C0) | **Practical live-strategy** | "real players, real spots" — David's direction; shipped |
+| 2026-07-23 | Cloud-session fork vs local `main` | **Port only the 5–10-max tables** | Cloud snapshot branched off the very first commit; its multiway/showdown/vsRaise work was superseded by local. Ported the one genuinely new idea, discarded the rest. |
+| 2026-07-24 | Supabase project | **Finish the cutover** | Dedicated project + config repointed; old tables dropped. Shared trading DB was the blast-radius risk. |
+| 2026-07-24 | Background sampling default | **ON by default, Web Worker** | David's call over opt-in/idle-chunks. Worker = zero UI jank; visibility-gated so it only runs while the app is foregrounded. |
+| 2026-07-24 | Equity pooling granularity | **Exact + texture×strength buckets** | David spotted the combinatorics problem: exact spots never repeat across users, so the confirm gate would starve. Buckets match the zone abstraction and converge. |
+| 2026-07-24 | Banking cadence | **Auto-bank ~10 hands, chart daily** | David: bank often for safety, aggregate the trend per day. Manual button removed as redundant. |
+| 2026-07-24 | Go live on board equity now? | **No — hold in shadow** | Cache is empty, so flipping gains nothing today, and banked grades are immutable. Walk-forward first, then flip. |
 | — | Pro pricing $6.99/$49.99 | proposed | confirm at A2 |
 | — | Omaha as add-on vs Everything tier | proposed both | decide at A4 |

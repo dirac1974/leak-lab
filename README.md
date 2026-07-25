@@ -9,7 +9,7 @@ Served from its own domain (see `DEPLOY.md`).
 
 Open it on your phone — it's a single self-contained page that runs entirely in the browser, works offline once loaded, and installs to your home screen as a real app (tap Share → Add to Home Screen).
 
-> No account required. The only thing the app phones home is an anonymous usage count (an event name like "open" plus a random install id — no hands, no results, no device info). Progress saves on your device — and because browsers can clear website data (iPhone Safari deletes it after 7 days away), **install to your home screen** (an installed app's storage is protected), **back up to a file** from the Progress tab, or **sign in with email** to sync sessions to the cloud.
+> No account required. Two things leave your device, both anonymous and neither tied to an account: an **anonymous usage count** (an event name like "open" plus a random install id — no hands, no results, no device info), and — while **SHARED SOLVER** is on in Setup — **equity samples** from the shared solver: the app runs quick Monte-Carlo sims in the background on spots you reach and uploads the tallies (the board, your two cards, and win/tie counts, keyed so identical spots merge) so everyone's postflop feedback gets sharper. It only runs while the app is open and on screen, and you can switch it off in Setup. Progress saves on your device — and because browsers can clear website data (iPhone Safari deletes it after 7 days away), **install to your home screen** (an installed app's storage is protected), **back up to a file** from the Progress tab, or **sign in with email** to sync sessions to the cloud.
 
 ---
 
@@ -35,19 +35,33 @@ Leak Lab runs a fast decision loop: **deal → decide → grade → learn.**
 
 ```
 leak-lab/
-├── index.html              ← the built, self-contained app (served by GitHub Pages)
+├── index.html               ← the built, self-contained app (served by GitHub Pages)
+├── equity-worker.js         ← built background-sampler worker (same-origin; CSP worker-src 'self')
+├── sw.js, manifest.webmanifest, icon-*.png   ← PWA runtime files
 ├── src/
-│   ├── leak-lab.jsx         ← the entire application (engine + UI, single file)
-│   └── entry.jsx            ← React mount point used by the build
-├── package.json             ← build scripts
-├── DESIGN.md                ← architecture & agent design structure (read this to extend it)
+│   ├── leak-lab.jsx         ← the application (engine + UI) — nearly everything lives here
+│   ├── mc-engine.js         ← React-free poker maths, shared by the app and the worker
+│   ├── equity-worker.js     ← background Monte-Carlo sampler (compute only, no network)
+│   ├── entry.jsx            ← React mount point used by the build
+│   ├── supabase-config.json ← project coordinates (client + build.js CSP read the same file)
+│   ├── fonts-gen.js         ← generated: fonts as data URIs
+│   └── data/                ← generated tables: jam-equity.js, equity-cache.js
+├── build.js                 ← inlines the bundle, locks CSP hashes, assembles _site/
+├── tools/
+│   ├── test/run-tests.js    ← the whole test suite (npm test) + zone snapshots
+│   └── sim/                 ← evaluator, MC oracle, equity aggregator + baker
+├── supabase/                ← migrations, cutover runbook, external posture check
 ├── .github/workflows/
-│   └── pages.yml            ← optional auto-deploy to GitHub Pages on push
+│   ├── pages.yml            ← test + build + deploy on every push to main
+│   └── aggregate-equity.yml ← nightly: aggregate the equity pool, bake, commit
+├── PLAN.md                  ← roadmap, current state, and the session handoff
+├── DESIGN.md                ← architecture & agent design (read this to extend it)
+├── DEPLOY.md                ← hosting/deploy runbook
 ├── LICENSE
 └── README.md
 ```
 
-The app is deliberately a **single source file** (`src/leak-lab.jsx`). Everything — the hand-ranking math, the range tables, the postflop classifier, the grader, the advice engine, and the React UI — lives there, in labeled sections. See [DESIGN.md](./DESIGN.md) for the full map.
+Nearly the whole app is **one source file** (`src/leak-lab.jsx`) — hand-ranking math, range tables, postflop classifier, grader, advice engine, and React UI, in labeled sections. The few deliberate exceptions are listed above (shared maths, the worker, generated data, config). See [DESIGN.md](./DESIGN.md) for the full map and [PLAN.md](./PLAN.md) for current state and next steps.
 
 ---
 
@@ -59,14 +73,19 @@ You only need [Node.js](https://nodejs.org) (18+).
 # install the build tool + React
 npm install
 
-# build index.html from source
+# build index.html (+ equity-worker.js and _site/) from source
 npm run build
 
 # then open index.html in any browser, or serve it:
 npm run serve      # → http://localhost:8080
+
+# the test suite — also runs in CI and blocks deploys
+npm test           # regenerate zone snapshots with: npm test -- write
 ```
 
-There's no framework and no dev server dependency — the build is a single `esbuild` call that bundles `src/entry.jsx` and inlines it into `index.html`.
+There's no framework and no dev server dependency. The build is two `esbuild` calls — the app (inlined into `index.html` under a strict, hash-pinned CSP) and the background equity worker (emitted as a real same-origin file) — followed by `node build.js`, which assembles the `_site/` deploy folder.
+
+Other scripts: `npm run sim:test` (evaluator checks), `npm run sim:oracle` (report-only Monte-Carlo audit of the jam boundaries), `npm run sim:aggregate` (equity pool → confirmed cache rows; needs the service-role key, `-- --self-test` runs the logic with no DB), `npm run bake:equity` (confirmed rows → `src/data/equity-cache.js`).
 
 ---
 
