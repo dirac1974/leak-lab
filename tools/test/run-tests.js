@@ -276,6 +276,13 @@ ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) ==
   ok("vsRaise wet continues wider than dry", zR({ tb: "wet", spr: 5 })[1].to > base[1].to);
   ok("vsRaise shallow widens the jam band", zR({ tb: "ahi", spr: 1.5 })[0].to > zR({ tb: "ahi", spr: 8 })[0].to);
   ok("vsRaise frequent raiser paid off wider", zR({ tb: "ahi", spr: 5, raiseF: 0.3 })[1].to > zR({ tb: "ahi", spr: 5, raiseF: 0.08 })[1].to);
+  // The JAM band must respond too — it was frozen across raiser frequencies until the
+  // 2026-07-25 audit, which the call-band-only assertion above could never catch.
+  ok("vsRaise jam band widens vs a frequent raiser", zR({ tb: "ahi", spr: 5, raiseF: 0.3 })[0].to > zR({ tb: "ahi", spr: 5, raiseF: 0.08 })[0].to);
+  ok("vsRaise both bands monotonic in raiser frequency", (() => {
+    const seq = [0.06, 0.12, 0.2, 0.3].map((rf) => zR({ tb: "ahi", spr: 5, raiseF: rf }));
+    return seq.every((z, i) => i === 0 || (z[0].to > seq[i - 1][0].to && z[1].to > seq[i - 1][1].to));
+  })());
   ok("vsRaise gto-anchored raiser = default chart", JSON.stringify(zR({ tb: "ahi", spr: 5, raiseF: M.PROF.gto.vsBet.r })) === JSON.stringify(base));
   ok("vsRaise continue tighter than vsCbet", base[1].to < M.zonesFor("vsCbet", { tb: "ahi", spr: 5 })[1].to);
   const zi = zR({ tb: "ahi", spr: 5, allIn: true });
@@ -287,12 +294,12 @@ ok("boardEquity guards short hero", M.boardEquity("nit", [C(14, "s")], board) ==
   const cw = (cf) => M.zonesFor("vsRaise", { tb: "ahi", spr: 5, allIn: true, callFrac: cf })[0].to;
   ok("vsRaise cheap call-off is near-automatic", cw(0.08) > 85, `${cw(0.08).toFixed(1)}`);
   ok("vsRaise call band monotonic in price", cw(0.08) > cw(0.5) && cw(0.5) > cw(1.5) && cw(1.5) > cw(3), [0.08, 0.5, 1.5, 3].map((x) => cw(x).toFixed(0)).join(" > "));
-  // A pathological 8×-pot call-off tightens to ~41 rather than to the nuts: that is
-  // the documented optimism of the percentile proxy (rank 41 is treated as ~59%
-  // equity). Realistic vsRaise call prices are ~0.2–0.6 pot, where the proxy is
-  // conservative against the MC (a rank-72 draw measured 33–50%), so this bound is
-  // deliberately loose rather than pretending the axis is sharper than it is.
-  ok("vsRaise huge call-off tightens materially", cw(8) < 45 && cw(8) < cw(0.5) - 20, `${cw(8).toFixed(1)}`);
+  // A pathological 8×-pot call-off lands near ~48 rather than at the nuts. Required
+  // equity there really is 47%, and the MC audit (2026-07-25) found the rank axis
+  // unbiased in that region, so the number is defensible — what the axis CANNOT
+  // represent is the polarized range a shove that size implies. Bound stays loose on
+  // purpose rather than pretending otherwise; PRICE_MARGIN_CALL carries the buffer.
+  ok("vsRaise huge call-off tightens materially", cw(8) < 55 && cw(8) < cw(0.5) - 20, `${cw(8).toFixed(1)}`);
 }
 
 /* ---- 9. Complete-the-hand invariant: no continuation may dead-end ----

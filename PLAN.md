@@ -190,7 +190,7 @@ Everything in this track is **shipped and live** unless marked otherwise. Live a
 ### D1 — Table sizes 5–10 max ✅ done 2026-07-23
 - [x] Positions/RFI generated from seat count + players-behind (`EP_NAMES`, `RFI_BY_BEHIND`); selector offers 10/9/8/7/6/5 plus Heads-up.
 - [x] 6-max and 9-max RFI rows kept **byte-identical** to the hand-tuned originals (`RFI_TUNED`) — no calibrated value changed.
-- [ ] **Unaudited:** the generated 5/7/8/10-max RFI rows (provenance noted in-code). Internally consistent and snapshot-tested; worth a sanity pass against public charts for those sizes when convenient.
+- [x] **Spot-audited 2026-07-25 (D7):** structurally sound and consistent with full-ring consensus. Two open product decisions came out of it (6-max row now inconsistent with the generated sizes; 5-max UTG slightly tight) — see D7.
 
 ### D2 — Crowd-pooled board equity (SHADOW — does not affect grading) 
 The accuracy play: postflop jams are currently priced off a **preflop-only** baked curve (`src/data/jam-equity.js`), which is blind to the actual board. This pipeline fixes that with real board equities, pooled across users.
@@ -211,7 +211,7 @@ Three fixes, all driven by user reports, all fenced by permanent invariant tests
 - [x] **vsRaise stage** — the two old "hand logged" dead-ends are gone. Villain raises hero's bet → real fold/call/jam decision (facing banner "RAISES TO / RAISES ALL-IN", to-call from the raise increment). Hero raises and villain continues → call gives hero the lead next street, re-jam becomes all-in vsRaise, called jam settles as a showdown.
 - [x] **BB check-option crash** — limped pots where hero holds the BB built a flop with no villain (`sc.vil` undefined), so the next tap threw and React silently dropped it: the hand appeared frozen. Bettor is now resolved by seat, not the literal `"BB"`.
 - [x] **donk/probe stage** — OOP hero now gets the real first-action decision (check or lead) instead of being auto-checked into the c-bet; and when the aggressor slows down, the next street becomes hero's probe decision instead of collapsing to an instant showdown. Also covers the in-position stab when the opener checks.
-- [ ] **Unaudited:** the `vsRaise` and `donk`/probe bands (authored, provenance in-code). Guarded today by directional invariants in `npm test` and hand review. The MC oracle can't reach them yet — see the blocker in the Handoff section.
+- [x] **Spot-audited 2026-07-25 (D7):** donk/probe bands match solver consensus; `vsRaise` had a frozen jam band, found and fixed. Full oracle coverage still blocked on a postflop range model — see the Handoff section.
 - [ ] Known simplifications left: multiway pots still use the compressed flop flow (heads-up is fully expanded); no true side-pot accounting (approximated by showdown-count riders).
 
 ### D6 — Commitment / price awareness ✅ done 2026-07-24 (user hand report)
@@ -220,10 +220,26 @@ The model had no concept of being **pot-committed**: the strength bands barely m
 - [x] Applied to **every** postflop path, not just the reported one: aggressor jams (`cbet`/`barrel`/`riverBet`/`donk` → single ALL-IN band), covered defenders (`vsCbet`/`vsBarrel`/`riverCall` → pure call-off price, and the phantom "raise" button is gone when facing an all-in), and `vsRaise` (priced on what hero actually owes via `ctx.callFrac`, so the price *replaces* the heuristic — cheap call-off near-automatic, expensive one near-nuts).
 - [x] Same root cause fixed in two more places: `heroBetOpts()` and `betInfo()` reported the *intended* sizing fraction even when the stack capped the bet, so a forced 15%-pot shove was graded (and responded to) as a 125% barrel. They now report the true fraction.
 - [x] General invariant tests so this can't reappear on a future path: sweeps every postflop stage × 6 textures × depths asserting committed stacks shove, covered defenders call by price, no phantom raise band, and value bands never widen as stacks get deeper — plus the reported hand pinned end to end.
-- [ ] **Unaudited:** the two margins (the pot-odds part is an identity; the margins are the judgement call). Checked against MC on the reported hand. Known limitation, documented in the test: at pathological call prices (>3× pot) the percentile proxy is too optimistic; realistic prices are where it holds up.
+- [x] **Spot-audited 2026-07-25 (D7):** the margins' stated rationale was empirically wrong and both were corrected (1.6→1.0, 1.25→1.1). Remaining limitation: the percentile axis cannot represent the polarized range a huge (>3× pot) shove implies, which is what `PRICE_MARGIN_CALL` now buys.
+
+### D7 — Spot audit of the unaudited charts ✅ 2026-07-25
+MC audit (turn boards, ~400 sampled hands) plus structural cross-checks. Scripts were throwaway; the findings and the fixes they produced are here.
+
+**The key measurement — is `classify()` rank a usable stand-in for equity?** It underpins `priceFloor()` and every showdown roll, so its error is the error of everything above it. Result: essentially unbiased against realistic ranges (rank 70–80 reads 25% vs **24.8%** measured; ranks 60–90 within ~3.5pp), and at the bottom it is **conservative, not optimistic** (rank 90–100: proxy 5%, measured 7–8.6% vs a tight call-off range, 23% vs any two). The top decile is too thin to judge (n=2).
+
+| Chart | Verdict |
+|---|---|
+| donk / probe bands | **Pass.** Donk 0% on A-high, 3.7% on low/wet — published solver donk frequency is ~0–5%, higher on boards favouring the caller. Probe after give-up 40–44% vs a ~40–55% consensus. Good match on both. |
+| 5/7/8/10-max RFI | **Pass, structurally sound.** Late seats are identical across every generated size (BTN 44, CO 26, HJ 19, LJ 15) — correct, since BTN always faces SB+BB regardless of how many folded earlier. Only the UTG-type seats scale with the count, and 10-max UTG 9.5% matches full-ring consensus. |
+| `vsRaise` bands | **Bug found and fixed.** The jam band was frozen at 6.0 across every raiser frequency (nit .08 → maniac .30) while only the call band responded — `rAdj` was never applied to it. Vs a 30%-frequency raiser you attack wider; now 8.3. This is exactly the "model ignores a parameter" class the metamorphic tests exist for, missed because the assertion only checked the call band. New invariants cover both bands. |
+| price margins | **Rationale refuted; corrected.** They were set to 1.6/1.25 to compensate for proxy *optimism* that the measurement shows does not exist — so they tightened the shove band and preserved some of the very under-shoving D6 set out to fix. Now `PRICE_MARGIN_BET` 1.0 (the price is the price) and `PRICE_MARGIN_CALL` 1.1 (a small buffer only for the polarized range a huge raise implies, which the percentile axis genuinely cannot represent). The reported hand's shove band went 34 → 89.6 → **93.5**. |
+
+**Two findings left as product decisions, not silently changed:**
+- The hand-tuned **6-max row is now internally inconsistent** with every other size: BTN 45 / SB 42 / CO 27 / HJ 21 against 44 / 40 / 26 / 19 elsewhere, so switching 6-max → 7-max tightens seats that face an identical situation. Defensible (the 6-max numbers came from published 6-max charts, and that population really does open looser) but it is a real seam. Fix would be to either adopt the curve for 6-max or hand-tune the other sizes to match.
+- **5-max UTG at 19%** is ~1–5 points tighter than typical 5-handed charts (~20–24%). The behind-anchored curve treats it as a 4-behind seat, which is right in structure; the curve value is just conservative at the shortest table.
 
 ### D5 — Test harness state
-`npm test` = **178 checks** (was 60 on 07-20) and blocks deploys. Layers: zone snapshots (`npm test -- write` to regenerate — verify the diff is additions-only), partition/GTO-anchoring invariants, metamorphic/directional swaps, coach-note-vs-grader consistency, stackoff pricing, `dailyRollup`, equity-cache keys + hierarchical lookup, and **two walk suites** (400 drill walks + 200 full-hand `genHand` walks per run) asserting every continuation settles or continues, terminates, and never dead-ends. Also: `npm run sim:aggregate -- --self-test` (16 checks, no DB/secret needed) and `npm run sim:oracle` (report-only MC audit).
+`npm test` = **180 checks** (was 60 on 07-20) and blocks deploys. Layers: zone snapshots (`npm test -- write` to regenerate — verify the diff is additions-only), partition/GTO-anchoring invariants, metamorphic/directional swaps, coach-note-vs-grader consistency, stackoff pricing, `dailyRollup`, equity-cache keys + hierarchical lookup, and **two walk suites** (400 drill walks + 200 full-hand `genHand` walks per run) asserting every continuation settles or continues, terminates, and never dead-ends. Also: `npm run sim:aggregate -- --self-test` (16 checks, no DB/secret needed) and `npm run sim:oracle` (report-only MC audit).
 
 ---
 

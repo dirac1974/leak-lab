@@ -357,7 +357,10 @@ function zonesFor(stage, ctx) {
          the current guard; hand review is the other. */
       const rf = ctx.raiseF == null ? PROF.gto.vsBet.r : ctx.raiseF;
       const rAdj = clampF(1 + (rf - PROF.gto.vsBet.r) * 2.2, 0.8, 1.6);
-      const j = Math.max(2.5, (B.r * 0.55 + sh * 0.3) * (mw > 1 ? 0.85 : 1));
+      // rAdj applies to the jam band too: vs someone who raises 30% of the time you
+      // attack wider, not identically to a nit. (Audit 2026-07-25 found this band was
+      // frozen across raiser frequencies while only the call band responded.)
+      const j = Math.max(2.5, (B.r * 0.55 + sh * 0.3) * rAdj * (mw > 1 ? 0.85 : 1));
       const wetW = ctx.tb === "wet" || ctx.tb === "mono" ? 8 : 2;
       const c = Math.max(j + 6, Math.min(46, (B.r * 1.9 + wetW + sh * 1.2) * rAdj * (mw > 1 ? 0.8 : 1)));
       if (ctx.allIn) {
@@ -632,16 +635,23 @@ function betInfo(sc, frac) {
    is why shoving there is close to automatic); `margin` > 1 demands a multiple of
    that price before the band opens, because the percentile proxy is optimistic for
    weak hands and a shove should not be endorsed on a rounding error. Margins are
-   the judgement call: the pot-odds part is an identity, the margins are not. Checked
-   against MC on the reported hand (needs 6.5%, has 33-50%); oracle-auditable once a
-   postflop range model exists. */
+   the judgement call: the pot-odds part is an identity, the margins are not.
+   MEASURED 2026-07-25 (MC audit, turn boards, ~400 sampled hands): the proxy is
+   essentially unbiased against realistic ranges — rank 70-80 reads 25% vs 24.8%
+   actual, ranks 60-90 land within ~3.5pp — and where it drifts at the bottom it is
+   CONSERVATIVE, not optimistic (rank 90-100: proxy 5%, actual 7-8.6% vs a tight
+   call-off range, 23% vs any two). So the earlier "proxy is optimistic for weak
+   hands" rationale was wrong, and margins that tightened the band on that basis
+   preserved the very under-shoving they were meant to guard. BET is now the raw
+   price; CALL keeps a small buffer only because a huge raise implies a polarized
+   range the percentile axis cannot represent. */
 function priceFloor(aOverP, margin) {
   if (!(aOverP > 0)) return 0;
   const need = (aOverP / (1 + 2 * aOverP)) * (margin == null ? 1 : margin);
   return Math.max(0, Math.min(96, 100 * (1 - need)));
 }
-const PRICE_MARGIN_BET = 1.6;  // shoving: fold equity helps, proxy optimism hurts more
-const PRICE_MARGIN_CALL = 1.25; // calling off: no fold equity, pure showdown price
+const PRICE_MARGIN_BET = 1.0;   // shoving: the price is the price (proxy measured unbiased/conservative)
+const PRICE_MARGIN_CALL = 1.1;  // calling off: small buffer for polarized big-raise ranges
 function heroBetOpts(sc) {
   const bv = sc.bbv || 2;
   const cap = (f) => Math.min(sc.effBB, chipBB(f * sc.potBB, bv));
