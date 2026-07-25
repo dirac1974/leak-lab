@@ -23,7 +23,8 @@ import { RC, handScore, RANKED, PCT, SUITS, materialize, deal, SIDX, encCard, ra
    whenever a profile's shove range changes, so stale samples are ignored. */
 const EQUITY_MODEL_V = 1;
 /* Grading stays on the baked preflop curve until pooled board equities are
-   validated and Stats-signed; flipping this true is a deliberate, gated change. */
+   been checked against the preflop curve and a fresh MC on sampled spots; flipping
+   this true is a deliberate change, not a default. */
 const EQUITY_CACHE_LIVE = false;
 const SUIT_PERMS = (() => {
   const out = [], base = ["s", "h", "d", "c"];
@@ -109,10 +110,11 @@ function foldBoundary(stage, ctx) {
 /* Positions for any ring size 5–10 are generated from the seat count; RFI comes
    from how many players are left to act behind you — which is why UTG at
    10-handed opens tighter than UTG at 6-handed. The 6-max and 9-max RFI rows are
-   the existing hand-tuned, Stats-signed values and are kept verbatim (unchanged).
-   The other sizes use the behind-anchored RFI_BY_BEHIND curve (ported from the
-   cloud session, 2026-07-22); those rows are NOT yet Stats-signed and need a
-   walk-forward validation reference before being treated as calibrated. */
+   the existing hand-tuned values (public-consensus adjacent) and are kept verbatim.
+   The other sizes are generated from the behind-anchored RFI_BY_BEHIND curve (ported
+   from the cloud session, 2026-07-22) rather than hand-tuned: internally consistent
+   (UTG opens tighten monotonically as the table grows, asserted in npm test) but
+   unaudited against outside charts for those sizes. */
 const EP_NAMES = {
   5: ["UTG", "CO"], 6: ["UTG", "HJ", "CO"], 7: ["UTG", "LJ", "HJ", "CO"],
   8: ["UTG", "UTG+1", "LJ", "HJ", "CO"], 9: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"],
@@ -348,8 +350,11 @@ function zonesFor(stage, ctx) {
          hands and big draws, fold the rest. Wet boards continue wider (draw raises
          exist), shallow stacks widen the stack-off, and frequent raisers get paid
          off wider (GTO-anchored: raiseF = gto's vsBet.r leaves the chart unchanged).
-         Base shape ported from the 2026-07-22 cloud session; NOT yet Stats-signed —
-         needs a walk-forward reference before these bands count as calibrated. */
+         Provenance: base shape ported from the 2026-07-22 cloud session, solver-
+         consensus-shaped and authored. The MC oracle can't audit these yet — profiles
+         carry postflop raise FREQUENCIES, not raise ranges, so there's nothing to
+         simulate the raiser's holdings from. Directional invariants in npm test are
+         the current guard; hand review is the other. */
       const rf = ctx.raiseF == null ? PROF.gto.vsBet.r : ctx.raiseF;
       const rAdj = clampF(1 + (rf - PROF.gto.vsBet.r) * 2.2, 0.8, 1.6);
       const j = Math.max(2.5, (B.r * 0.55 + sh * 0.3) * (mw > 1 ? 0.85 : 1));
@@ -378,7 +383,8 @@ function zonesFor(stage, ctx) {
            boards that smash the caller's range, wider when shallow.
          - after they GAVE UP (checked back / stopped barrelling): their range is
            capped — probe wide for value and folds.
-         Authored bands, NOT Stats-signed; needs a walk-forward reference. */
+         Authored bands (check-dominant is the solver consensus for donking); same
+         audit gap as vsRaise — no raise/lead range model to simulate against yet. */
       const street = ctx.street || "flop";
       const gave = !!ctx.gaveUp;
       const L = (sz) => `BET ${pctLbl(SIZES[street][sz])}`;
@@ -626,7 +632,9 @@ function betInfo(sc, frac) {
    is why shoving there is close to automatic); `margin` > 1 demands a multiple of
    that price before the band opens, because the percentile proxy is optimistic for
    weak hands and a shove should not be endorsed on a rounding error. Margins are
-   authored, NOT Stats-signed — they want a walk-forward reference. */
+   the judgement call: the pot-odds part is an identity, the margins are not. Checked
+   against MC on the reported hand (needs 6.5%, has 33-50%); oracle-auditable once a
+   postflop range model exists. */
 function priceFloor(aOverP, margin) {
   if (!(aOverP > 0)) return 0;
   const need = (aOverP / (1 + 2 * aOverP)) * (margin == null ? 1 : margin);

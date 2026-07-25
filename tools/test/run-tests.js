@@ -194,7 +194,7 @@ ok(`coach-note consistency scanned ${advChecked} advice strings`, advChecked > 2
 
 /* ---- 6. Board-equity cache: canonical key + shadow-mode grading no-op ----
    The pool only works if strategically-identical spots collapse to one key, and
-   the accuracy plumbing must NOT touch a single grade until it's Stats-signed. */
+   the accuracy plumbing must NOT touch a single grade while the flag is off. */
 const C = (r, s) => ({ r, s });
 // A concrete spot: hero AsKh, flop Qs Jd 2c.
 const hero = [C(14, "s"), C(13, "h")], board = [C(12, "s"), C(11, "d"), C(2, "c")];

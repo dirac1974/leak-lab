@@ -116,7 +116,7 @@ secret. The full **go-live sequence** (each step gated on the previous):
 2. `npm run sim:aggregate` — confirm authoritative equities into `ll_equity_cache`.
 3. `npm run bake:equity` — bake confirmed rows into `src/data/equity-cache.js`.
 4. **Only then** flip `EQUITY_CACHE_LIVE = true` in `src/leak-lab.jsx`, with a
-   walk-forward validation reference + a Stats sign-off note (per project rules).
+   comparison against the preflop curve and a fresh MC on sampled member spots.
 5. `npm run build`, commit, deploy.
 
 Until step 4, the whole path runs in shadow: samples pool and equities bake, but

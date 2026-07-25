@@ -190,7 +190,7 @@ Everything in this track is **shipped and live** unless marked otherwise. Live a
 ### D1 — Table sizes 5–10 max ✅ done 2026-07-23
 - [x] Positions/RFI generated from seat count + players-behind (`EP_NAMES`, `RFI_BY_BEHIND`); selector offers 10/9/8/7/6/5 plus Heads-up.
 - [x] 6-max and 9-max RFI rows kept **byte-identical** to the hand-tuned originals (`RFI_TUNED`) — no calibrated value changed.
-- [ ] **Owed:** Stats sign-off + walk-forward reference for the generated 5/7/8/10-max RFI rows (flagged in-code).
+- [ ] **Unaudited:** the generated 5/7/8/10-max RFI rows (provenance noted in-code). Internally consistent and snapshot-tested; worth a sanity pass against public charts for those sizes when convenient.
 
 ### D2 — Crowd-pooled board equity (SHADOW — does not affect grading) 
 The accuracy play: postflop jams are currently priced off a **preflop-only** baked curve (`src/data/jam-equity.js`), which is blind to the actual board. This pipeline fixes that with real board equities, pooled across users.
@@ -200,7 +200,7 @@ The accuracy play: postflop jams are currently priced off a **preflop-only** bak
 - [x] Collection: on-device **Web Worker** (`src/equity-worker.js`, built to `equity-worker.js`; shares `src/mc-engine.js` with the app) samples the postflop spot the user is on. "SHARED SOLVER" toggle in Setup, **ON by default**, persisted as `ll_contribute`, paused whenever the tab isn't visible, ~24k trials/spot, capped per session.
 - [x] Aggregation: `.github/workflows/aggregate-equity.yml` (nightly 09:17 UTC + manual dispatch) → `npm run sim:aggregate` → `npm run bake:equity` → commits `src/data/equity-cache.js` → normal deploy. Verified authenticating in CI; soft-skips green without the secret.
 - [x] Trust model: the crowd only decides **which** cells are worth caching; the published number is always an **authoritative server-side recompute** (buckets: weighted recompute of up to `BUCKET_MEMBER_CAP` most-observed members, capping logged). Confirm requires `N_MIN` trials across `SID_MIN` distinct devices, per-device capped, and pool-vs-recompute agreement within `TOL`/`TOL_BUCKET`.
-- [ ] **Gate to go live:** `EQUITY_CACHE_LIVE = false` in `src/leak-lab.jsx`. Flip only after confirmed rows are baked **and** a walk-forward comparison (bucket equity vs preflop curve vs fresh MC on sampled members) looks sane, per the parameter-change rule. Note banked history is immutable, so bad grades can't be retro-fixed — that's why the look happens first.
+- [ ] **Gate to go live:** `EQUITY_CACHE_LIVE = false` in `src/leak-lab.jsx`. Flip once confirmed rows are baked **and** a comparison (bucket equity vs the preflop curve vs a fresh MC on sampled members) looks sane. The reason to look first is concrete, not procedural: banked history is immutable, so grades produced from bad numbers can't be retro-fixed.
 
 ### D3 — Session auto-banking ✅ done 2026-07-24
 - [x] Auto-banks every **10 completed hands** (full mode) or **30 decisions** (drill), then rolls into a fresh session; leaving the training screen banks the trailing partial. Manual "Bank current session" button removed.
@@ -211,7 +211,7 @@ Three fixes, all driven by user reports, all fenced by permanent invariant tests
 - [x] **vsRaise stage** — the two old "hand logged" dead-ends are gone. Villain raises hero's bet → real fold/call/jam decision (facing banner "RAISES TO / RAISES ALL-IN", to-call from the raise increment). Hero raises and villain continues → call gives hero the lead next street, re-jam becomes all-in vsRaise, called jam settles as a showdown.
 - [x] **BB check-option crash** — limped pots where hero holds the BB built a flop with no villain (`sc.vil` undefined), so the next tap threw and React silently dropped it: the hand appeared frozen. Bettor is now resolved by seat, not the literal `"BB"`.
 - [x] **donk/probe stage** — OOP hero now gets the real first-action decision (check or lead) instead of being auto-checked into the c-bet; and when the aggressor slows down, the next street becomes hero's probe decision instead of collapsing to an instant showdown. Also covers the in-position stab when the opener checks.
-- [ ] **Owed:** Stats sign-off + walk-forward for the `vsRaise` and `donk`/probe bands (authored, flagged in-code).
+- [ ] **Unaudited:** the `vsRaise` and `donk`/probe bands (authored, provenance in-code). Guarded today by directional invariants in `npm test` and hand review. The MC oracle can't reach them yet — see the blocker in the Handoff section.
 - [ ] Known simplifications left: multiway pots still use the compressed flop flow (heads-up is fully expanded); no true side-pot accounting (approximated by showdown-count riders).
 
 ### D6 — Commitment / price awareness ✅ done 2026-07-24 (user hand report)
@@ -220,7 +220,7 @@ The model had no concept of being **pot-committed**: the strength bands barely m
 - [x] Applied to **every** postflop path, not just the reported one: aggressor jams (`cbet`/`barrel`/`riverBet`/`donk` → single ALL-IN band), covered defenders (`vsCbet`/`vsBarrel`/`riverCall` → pure call-off price, and the phantom "raise" button is gone when facing an all-in), and `vsRaise` (priced on what hero actually owes via `ctx.callFrac`, so the price *replaces* the heuristic — cheap call-off near-automatic, expensive one near-nuts).
 - [x] Same root cause fixed in two more places: `heroBetOpts()` and `betInfo()` reported the *intended* sizing fraction even when the stack capped the bet, so a forced 15%-pot shove was graded (and responded to) as a 125% barrel. They now report the true fraction.
 - [x] General invariant tests so this can't reappear on a future path: sweeps every postflop stage × 6 textures × depths asserting committed stacks shove, covered defenders call by price, no phantom raise band, and value bands never widen as stacks get deeper — plus the reported hand pinned end to end.
-- [ ] **Owed:** Stats sign-off + walk-forward for the two margins. Known limitation (documented in the test): at pathological call prices (>3× pot) the percentile proxy is too optimistic; realistic prices are where it's been checked against MC.
+- [ ] **Unaudited:** the two margins (the pot-odds part is an identity; the margins are the judgement call). Checked against MC on the reported hand. Known limitation, documented in the test: at pathological call prices (>3× pot) the percentile proxy is too optimistic; realistic prices are where it holds up.
 
 ### D5 — Test harness state
 `npm test` = **178 checks** (was 60 on 07-20) and blocks deploys. Layers: zone snapshots (`npm test -- write` to regenerate — verify the diff is additions-only), partition/GTO-anchoring invariants, metamorphic/directional swaps, coach-note-vs-grader consistency, stackoff pricing, `dailyRollup`, equity-cache keys + hierarchical lookup, and **two walk suites** (400 drill walks + 200 full-hand `genHand` walks per run) asserting every continuation settles or continues, terminates, and never dead-ends. Also: `npm run sim:aggregate -- --self-test` (16 checks, no DB/secret needed) and `npm run sim:oracle` (report-only MC audit).
@@ -234,17 +234,23 @@ The model had no concept of being **pot-committed**: the strength bands barely m
 **Verify the tree is healthy:** `npm test` (expect 168 passing) and `npm run build`.
 
 **Three switches that are deliberately OFF, and what each needs:**
-1. `EQUITY_CACHE_LIVE` (`src/leak-lab.jsx`) — needs confirmed rows baked + walk-forward + Stats sign-off. See D2.
+1. `EQUITY_CACHE_LIVE` (`src/leak-lab.jsx`) — needs confirmed rows baked, then the comparison in D2.
 2. Supabase **Auth URL config** — dashboard-only, David; magic-link login stays broken until then. See D0.
 3. `SUPABASE_SERVICE_ROLE_KEY` — ✅ now set as an **Actions** repository secret (a first attempt landed in Codespaces secrets, which Actions can't read; if aggregation ever "skips", check the tab). Nightly runs authenticate.
 
 **Next actions, in order:**
 1. **Watch the pool fill.** `select count(*), count(distinct k), count(distinct sid) from ll_equity_samples;` — buckets need ≥2 distinct devices, so a second device is what unblocks the first confirmations. Then dispatch the aggregate workflow and read its `buckets:` line.
-2. **Run the walk-forward comparison** once rows confirm, and take the `EQUITY_CACHE_LIVE` decision with it.
-3. **Clear the Stats-sign-off debt** (D1 RFI rows, D4 vsRaise + donk bands). Blocker worth knowing: the MC oracle can't audit postflop raise/lead decisions yet because profiles carry raise *frequencies*, not postflop raise *ranges* — modelling that is the prerequisite (open design item).
+2. **Compare and decide on `EQUITY_CACHE_LIVE`** once rows confirm (bucket equity vs preflop curve vs fresh MC).
+3. **Extend the MC oracle to postflop raise/lead spots.** Right now `npm run sim:oracle` can only audit `vsJam`, because profiles carry postflop raise *frequencies*, not raise *ranges* — there's nothing to deal the raiser's holdings from. Add a postflop range model and the authored bands (D1/D4/D6) become oracle-checkable instead of review-only. This is the single highest-leverage accuracy item.
 4. **Then back to Track A/C** — A1 seeding is still the gate on all store spend; C1's pot-scaled postflop EV and C3 range-narrowing are the next product features.
 
-**Conventions that matter here:** feature branches + fast-forward merges to `main` (never force-push); every strategy-parameter change needs a Stats-sign-off note in a comment + walk-forward reference; new DB columns get listed explicitly in the commit message; shadow-mode first for anything that touches grading; secrets only ever in GitHub/Supabase secret stores.
+**Conventions that matter here:** feature branches + fast-forward merges to `main` (never force-push); shadow-mode first for anything that touches grading; secrets only ever in GitHub/Supabase secret stores.
+
+**How strategy numbers get validated in THIS project** (there is no Stats sign-off here — that's a trading-bot rule, not a Leak Lab one):
+1. A **provenance comment** at the table saying where the numbers came from — hand-tuned, public-consensus adjacent, MC-derived, or authored — so the next reader knows what they're trusting.
+2. **`npm test`** — the zone snapshot (a strategy change must show up as a deliberate diff) plus directional/metamorphic invariants that catch a parameter the model silently ignores.
+3. **`npm run sim:oracle`** — the MC oracle, where it can reach the spot (`vsJam` today; postflop raise/lead needs the range model above).
+4. **David's hand review** — several of the sharpest fixes in this repo came from a screenshot of a spot that looked wrong, including the commitment bug in D6. Treat it as a first-class validation channel.
 
 ---
 
