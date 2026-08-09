@@ -2629,6 +2629,176 @@ function LeakChart({ tr, height = 168 }) {
   );
 }
 
+const SGL = { s: "\u2660", h: "\u2665", d: "\u2666", c: "\u2663" };
+const cardStr = (c) => `${RC[c.r]}${SGL[c.s]}`;
+const holeStr = (cs) => cs.map(cardStr).join("");
+/* ================= Live hand logger: reconstruction & analysis =================
+   A logged hand is replayed action by action; every hero decision is rebuilt as a
+   trainer scenario and graded through the exact same zonesFor/grade pipeline, so
+   live play and training are measured by one ruler. Straddles rescale the game:
+   the straddle becomes the effective big blind (stack depth halves in real terms)
+   and the blinds become dead money. Unknown ("?") seats grade pure-GTO. */
+const UNK = { id: "unk", name: "Unknown", icon: "?", desc: "Typical low-stakes player until proven otherwise — calls too much, rarely raises without it", rfi: 0.85, cbet: 0.5, vsRaise: { f: 0.3, c: 0.62, r: 0.08 }, vs3: { f: 0.45, c: 0.48, r: 0.07 }, vsBet: { f: 0.28, c: 0.64, r: 0.08 } };
+const LPROF = (id) => (id === "unk" || !id ? UNK : PROF[id]);
+function holeClass(cs) {
+  const [a, b] = [...cs].sort((x, y) => y.r - x.r);
+  const label = a.r === b.r ? `${RC[a.r]}${RC[b.r]}` : `${RC[a.r]}${RC[b.r]}${a.s === b.s ? "s" : "o"}`;
+  const rec = RANKED.find((h) => h.label === label);
+  return { cards: cs, label, pct: rec ? rec.pct : 60 };
+}
+const HSTAGE = { rfi: "Open decision", vsOpen: "Facing an open", vs3bet: "Facing a 3-bet", vs4bet: "Facing a 4-bet", vsJam: "Facing a jam", cbet: "C-bet spot", barrel: "Turn barrel", riverBet: "River bet", vsCbet: "Facing c-bet", vsBarrel: "Facing turn bet", riverCall: "River decision", vsRaise: "Facing a raise" };
+function analyzeHand(hand) {
+  const N = hand.nSeats;
+  const posArr = N === 2 ? ["SB", "BB"] : TABLES[`${N}max`].pos;
+  const unit = hand.straddle || hand.stake.bb;            // effective bb in dollars
+  const U = (d) => d / unit;                               // dollars → units
+  const mode = N === 2 ? "hu" : `${N}max`;
+  const hu = N === 2;
+  const hero = holeClass(hand.hero);
+  const heroPos = hand.heroPos;
+  const straddled = !!hand.straddle;
+  const profOf = (pos) => LPROF(hand.seats[posArr.indexOf(pos)]);
+  // ---- state ----
+  // Sparse logs: only actors are recorded; any seat never mentioned folded preflop.
+  let potD = hand.stake.sb + hand.stake.bb + (hand.straddle || 0);
+  const mentioned = new Set([hand.heroPos]);
+  for (const st of ["pre", "flop", "turn", "river"]) for (const a of ((hand.actions || {})[st] || [])) mentioned.add(a.pos);
+  const live = new Set([...mentioned].filter((p) => posArr.includes(p)));
+  if (!live.size) live.add(hand.heroPos);
+  const contrib = {};                                       // this street, dollars
+  contrib.SB = hand.stake.sb; contrib.BB = hand.stake.bb;
+  if (straddled) {
+    const sPos = hand.straddlePos === "BTN" ? "BTN" : (posArr.includes("UTG") ? "UTG" : "SB");
+    contrib[sPos] = hand.straddle;
+  }
+  let curBetD = hand.straddle || hand.stake.bb;
+  let stackD = hand.stack != null ? hand.stack : hand.stake.bb * 100;
+  let heroPutD = 0, heroPutStreetD = 0;
+  let lastAgg = null, preAggCount = 0, heroWasOpener = false, hero3Bet = false;
+  let prevStreetAgg = null;
+  const decisions = [];
+  const boards = { pre: [], flop: hand.board.slice(0, 3), turn: hand.board.slice(0, 4), river: hand.board.slice(0, 5) };
+  const streets = ["pre", "flop", "turn", "river"];
+  for (const street of streets) {
+    const acts = (hand.actions && hand.actions[street]) || [];
+    if (street !== "pre") {
+      for (const k of Object.keys(contrib)) delete contrib[k];
+      curBetD = 0; heroPutStreetD = 0;
+      prevStreetAgg = lastAgg;
+    }
+    const board = boards[street];
+    let streetBetCount = street === "pre" ? (straddled ? 1 : 0) : 0; // straddle counts as a "bet" level but not a raise
+    for (const act of acts) {
+      const pos = act.pos, mine = pos === heroPos;
+      const owedD = Math.max(0, curBetD - (contrib[pos] || 0));
+      if (mine && act.a !== "post") {
+        // ---------- hero decision point: build scenario + grade ----------
+        const liveN = live.size;
+        const cls = street === "pre" ? null : classify(hand.hero, board);
+        const keyOpp = lastAgg && lastAgg !== heroPos ? lastAgg : [...live].find((p) => p !== heroPos) || "BB";
+        const vilP = profOf(keyOpp);
+        let stage, action = act.a, faceBB, vFrac, rTo, openBB, ip;
+        const matchedD = potD - Math.max(0, curBetD - Math.max(...[...live].map((p) => contrib[p] || 0), 0)); // approx: pot incl bets
+        const potU = U(potD - owedD * 0);                    // convention below per stage
+        if (street === "pre") {
+          if (preAggCount === 0) {
+            stage = "rfi";
+            if (act.a === "f") action = "fold";
+            else if (act.a === "c") action = "limp";
+            else if (act.a === "x") action = null;           // BB/straddle free check: not a graded decision
+            else action = "raiseS";                          // any open size: canonical raise family
+          } else if (preAggCount === 1 && !heroWasOpener) {
+            stage = "vsOpen"; openBB = U(curBetD);
+            action = act.a === "f" ? "fold" : act.a === "c" ? "call" : "raiseS";
+          } else if (heroWasOpener && preAggCount === 1) {   // shouldn't occur (hero faces own open)
+            stage = "vsOpen"; action = act.a === "f" ? "fold" : act.a === "c" ? "call" : "raiseS";
+          } else if (preAggCount === 2) {
+            stage = U(owedD) >= U(stackD - heroPutD) * 0.6 ? "vsJam" : "vs3bet";
+            action = act.a === "f" ? "fold" : act.a === "c" ? "call" : "raise";
+          } else {
+            stage = U(owedD) >= U(stackD - heroPutD) * 0.6 ? "vsJam" : "vs4bet";
+            action = act.a === "f" ? "fold" : act.a === "c" ? "call" : "raise";
+          }
+        } else {
+          const heroBetStreetD = contrib[heroPos] || 0;
+          ip = postIP(heroPos, keyOpp);
+          if (curBetD === 0) {
+            stage = street === "flop" ? "cbet" : street === "turn" ? "barrel" : "riverBet";
+            action = act.a === "x" ? "check" : "betS";       // resolved to size id below
+          } else if (heroBetStreetD > 0) {
+            stage = "vsRaise"; faceBB = U(owedD); rTo = U(curBetD);
+            action = act.a === "f" ? "fold" : act.a === "c" ? "call" : "raise";
+          } else {
+            stage = street === "flop" ? "vsCbet" : street === "turn" ? "vsBarrel" : "riverCall";
+            vFrac = owedD / Math.max(1, potD - owedD);
+            action = act.a === "f" ? "fold" : act.a === "c" ? "call" : "raise";
+          }
+        }
+        if (action) {
+          const effU = U(stackD - heroPutD);
+          const potForZonesU = stage === "vsRaise" ? U(potD - owedD) : stage.startsWith("vs") && street !== "pre" ? U(potD - owedD) : U(potD);
+          const sc = { stage, street: street === "pre" ? undefined : street, hu, mode, heroPos, hand: hero,
+            board, cls, tx: board.length ? texture(board) : null, tb: board.length ? textureBucket(board) : null,
+            bbv: unit, potBB: potForZonesU, effBB: effU, nWay: Math.max(2, liveN), straddled,
+            openBB, openerPos: stage === "vsOpen" ? keyOpp : undefined, aggPos: keyOpp, aggP: vilP,
+            rfiT: hu ? null : (TABLES[mode].rfi[heroPos] != null ? TABLES[mode].rfi[heroPos] : 40),
+            vFrac, faceBB, rTo, ip, vil: { pos: keyOpp, p: vilP }, unk: hand.seats[posArr.indexOf(keyOpp)] === "unk" || !hand.seats[posArr.indexOf(keyOpp)],
+            S: U(stackD), openerP: vilP };
+          const zones = zonesFor(stage, { hu, mode, rfiT: sc.rfiT, heroPos, openerPos: sc.openerPos, bbv: unit, openBB, nWay: sc.nWay, tb: sc.tb, ip, frac: vFrac, spr: sc.cls && sc.effBB != null ? sc.effBB / Math.max(0.5, sc.potBB) : undefined });
+          // resolve a logged bet's dollars to the nearest standard size id (betS/betB)
+          let actId = action;
+          if (AGG_STAGES.includes(stage) && action !== "check") {
+            const frac0 = (act.to || 0) / Math.max(1, potD);
+            const S2 = SIZES[street];
+            actId = Math.abs(frac0 - S2.s) <= Math.abs(frac0 - S2.b) ? "betS" : "betB";
+          }
+          const pct = street === "pre" ? hero.pct : sc.cls.rank;
+          const g = AGG_STAGES.includes(stage)
+            ? gradeSized(zones, pct, actId, sc.potBB)
+            : (stage === "rfi" || stage === "vsOpen") ? gradeRaise(zones, pct, action)
+            : grade(zones, pct, action, sc.cls ? 6 : undefined);
+          const leak = g.verdict === "miss" ? resolveLeak(stage, g, actId) : null;
+          decisions.push({ street, stage, sc, zones, action: actId, actAmtD: act.to || (act.a === "c" ? owedD : 0), g, leak, potD, faceD: owedD });
+        }
+      }
+      // ---------- apply the action ----------
+      if (act.a === "f") live.delete(pos);
+      else if (act.a === "c") { const d = Math.min(owedD, 1e9); potD += d; contrib[pos] = (contrib[pos] || 0) + d; if (mine) { heroPutD += d; heroPutStreetD += d; } }
+      else if (act.a === "b" || act.a === "r") {
+        const to = act.to || curBetD * 2 || unit * 2.5;
+        const d = Math.max(0, to - (contrib[pos] || 0));
+        potD += d; contrib[pos] = to; curBetD = Math.max(curBetD, to);
+        if (mine) { heroPutD += d; heroPutStreetD += d; }
+        if (street === "pre") { preAggCount++; if (mine && preAggCount === 1) heroWasOpener = true; if (mine && preAggCount === 2) hero3Bet = true; }
+        lastAgg = pos; streetBetCount++;
+      }
+    }
+    if (!live.has(heroPos)) break;
+    if ((hand.board || []).length < (street === "pre" ? 3 : street === "flop" ? 4 : street === "turn" ? 5 : 99)) break;
+  }
+  const evLostU = decisions.reduce((s, d) => s + (d.g.ev || 0), 0);
+  const nMiss = decisions.filter((d) => d.g.verdict === "miss").length;
+  const acc = decisions.length ? Math.round((decisions.filter((d) => d.g.verdict !== "miss").length / decisions.length) * 100) : 100;
+  const evLostD = evLostU * unit;
+  return { decisions, acc, evLostU: +evLostU.toFixed(2), evLostD: +evLostD.toFixed(0), nMiss,
+    adjResultD: hand.result != null ? +(hand.result + evLostD).toFixed(0) : null, unit, straddled };
+}
+function analyzeSession(hands) {
+  const per = hands.map((h) => ({ hand: h, an: analyzeHand(h) }));
+  const decs = per.reduce((s, x) => s + x.an.decisions.length, 0);
+  const miss = per.reduce((s, x) => s + x.an.nMiss, 0);
+  const evD = per.reduce((s, x) => s + x.an.evLostD, 0);
+  const netD = per.reduce((s, x) => s + (x.hand.result || 0), 0);
+  const leaks = {};
+  per.forEach((x) => x.an.decisions.forEach((d) => { if (d.leak) leaks[d.leak] = (leaks[d.leak] || 0) + 1; }));
+  return { per, decs, acc: decs ? Math.round(((decs - miss) / decs) * 100) : 100, evD: +evD.toFixed(0), netD, adjD: +(netD + evD).toFixed(0), leaks };
+}
+
+async function sbInsertHand(at, hand) {
+  const r = await fetch(`${SB_URL}/rest/v1/ll_hands`, { method: "POST", headers: { ...sbHeaders(at), Prefer: "return=minimal" }, body: JSON.stringify({ data: hand }) });
+  if (!r.ok) throw new Error("hand save failed");
+}
+
 export default function App() {
   const [view, setView] = useState("setup");
   const [cfg, setCfg] = useState({ mode: "9max", hu: "tag", seats: ["nit", "reg", "lag", "station", "maniac", "tag", "station", "nit", "reg"], stake: 0, stack: 2, image: "unknown", play: "drill" });
@@ -2644,6 +2814,27 @@ export default function App() {
   const [history, setHistory] = useState(() => loadHist(store.get("ll_current", null)));
   const [nameInput, setNameInput] = useState("");
   const [peek, setPeek] = useState(null);
+  // ---- live hand logger ----
+  const [logMode, setLogMode] = useState("live"); // live | review
+  const [logN, setLogN] = useState(9);
+  const [logSeats, setLogSeats] = useState(Array(10).fill("unk"));
+  const [draft, setDraft] = useState(null);       // hand being entered
+  const [padTarget, setPadTarget] = useState(null); // {kind:'hero'|'board'} | {kind:'amt', street, pos, a}
+  const [actSel, setActSel] = useState(null);     // {street, pos} awaiting action choice
+  const [openHand, setOpenHand] = useState(null); // review detail index
+  const [liveHands, setLiveHands] = useState(() => store.get("ll_live_" + (store.get("ll_current", null) || "guest"), []));
+  const liveKey = () => "ll_live_" + (profile || "guest");
+  const newDraft = () => ({ t: Date.now(), nSeats: logN, stake: { label: STAKES[cfg.stake].label, bb: STAKES[cfg.stake].bb, sb: STAKES[cfg.stake].sb }, stack: STACK_OPTS[cfg.stack] * STAKES[cfg.stake].bb, straddle: null, seats: logSeats.slice(0, logN), heroPos: null, hero: [], board: [], actions: { pre: [], flop: [], turn: [], river: [] }, result: null });
+  const saveDraft = () => {
+    if (!draft || !draft.heroPos || draft.hero.length !== 2) return false;
+    const h = { ...draft, seats: logSeats.slice(0, logN) };
+    const all = [...liveHands, h];
+    setLiveHands(all); store.set(liveKey(), all);
+    if (CLOUD_ON && cloud) sbInsertHand(cloud.at, h).catch(() => {});
+    setDraft(null); setPadTarget(null); setActSel(null);
+    return true;
+  };
+
   const [openLeak, setOpenLeak] = useState(null);
   const [leakScope, setLeakScope] = useState("session");
   const [bkMsg, setBkMsg] = useState("");
@@ -2939,6 +3130,7 @@ export default function App() {
           {seg("Train", view === "train", () => (sc ? setView("train") : start()), "t")}
           {seg("Leaks", view === "leaks", () => setView("leaks"), "l")}
           {seg("Progress", view === "progress", () => setView("progress"), "p")}
+          {seg("Log", view === "log", () => setView("log"), "lg")}
           {seg("Setup", view === "setup", () => setView("setup"), "s")}
         </div>
 
@@ -3378,6 +3570,214 @@ export default function App() {
               {nRec > 0 && profile && (
                 <div className="ll-tap" onClick={() => { store.set(histKey(profile), []); setHistory([]); }}
                   style={{ textAlign: "center", fontFamily: MONO, fontSize: 10.5, color: T.dim, marginTop: 12, textDecoration: "underline" }}>clear {profile}'s history</div>
+              )}
+            </div>
+          );
+        })()}
+
+        {view === "log" && (() => {
+          const G = { chip: { fontFamily: MONO, fontSize: 12, padding: "7px 10px", borderRadius: 8, background: "#1B211E", border: `1px solid ${T.line}`, color: T.bone }, dim: { fontFamily: MONO, fontSize: 10.5, color: T.dim } };
+          const LETTER = { unk: "?", nit: "N", tag: "T", lag: "L", station: "S", maniac: "M", gto: "G" };
+          const CYCLE = ["unk", "nit", "tag", "lag", "station", "maniac", "gto"];
+          const posArr = logN === 2 ? ["SB", "BB"] : TABLES[`${logN}max`].pos;
+          const RKS = [14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2];
+          const cardTxt = (c) => `${RC[c.r]}${c.s}`;
+          const dead = draft ? [...draft.hero, ...draft.board] : [];
+          const addCard = (c) => {
+            if (!draft || !padTarget) return;
+            if (dead.some((d) => d.r === c.r && d.s === c.s)) return;
+            if (padTarget.kind === "hero" && draft.hero.length < 2) setDraft({ ...draft, hero: [...draft.hero, c] });
+            if (padTarget.kind === "board" && draft.board.length < 5) setDraft({ ...draft, board: [...draft.board, c] });
+          };
+          const addAct = (street, pos, a, to) => {
+            const acts = { ...draft.actions, [street]: [...draft.actions[street], { pos, a, ...(to != null ? { to } : {}) }] };
+            setDraft({ ...draft, actions: acts }); setActSel(null); setPadTarget(null);
+          };
+          const lineTxt = (street) => draft.actions[street].map((a) => `${a.pos} ${a.a}${a.to != null ? a.to : ""}`).join(" · ");
+          /* ---------- REVIEW ---------- */
+          if (logMode === "review") {
+            const hands = liveHands.slice().reverse();
+            if (openHand != null && hands[openHand]) {
+              const h = hands[openHand]; let an;
+              try { an = analyzeHand(h); } catch (e) { an = { decisions: [], acc: 0, evLostD: 0, adjResultD: null, error: true }; }
+              return (
+                <div>
+                  <div className="ll-tap" onClick={() => setOpenHand(null)} style={{ ...G.dim, marginBottom: 10 }}>← all hands</div>
+                  <div style={{ fontFamily: DISP, fontWeight: 700, fontSize: 18 }}>{holeStr(h.hero)} · {h.heroPos}{h.straddle ? ` · ${h.straddlePos === "BTN" ? "button" : "UTG"} straddle ${usd(h.straddle)}` : ""}</div>
+                  <div style={{ ...G.dim, marginBottom: 6 }}>{h.stake.label} · {h.nSeats} players{h.board.length ? ` · board ${holeStr(h.board)}` : ""} · net {h.result != null ? usd(h.result) : "—"}</div>
+                  {an.error && <div style={{ ...G.dim, color: T.heart }}>Couldn't fully parse this hand — check the action line.</div>}
+                  {an.decisions.map((d, i) => {
+                    const vcol = d.g.verdict === "best" ? T.club : d.g.verdict === "ok" ? T.brass : T.heart;
+                    let advice = null; try { advice = adviceFor(d.sc, d.zones, d.sc.bbv); } catch (e) {}
+                    return (
+                      <div key={i} style={{ background: T.panel, border: `1px solid ${T.line}`, borderLeft: `3px solid ${vcol}`, borderRadius: 10, padding: "10px 12px", margin: "8px 0" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <span style={{ fontFamily: DISP, fontWeight: 700, fontSize: 13, letterSpacing: 1 }}>{(d.street || "preflop").toUpperCase()} · {HSTAGE[d.stage] || d.stage}</span>
+                          <span style={{ fontFamily: MONO, fontSize: 11, color: vcol }}>{d.g.verdict.toUpperCase()}{d.g.ev ? ` · −${(d.g.ev * an.unit).toFixed(0)}$ EV` : ""}</span>
+                        </div>
+                        <div style={{ ...G.dim, margin: "3px 0" }}>You: {d.action}{d.actAmtD ? ` ${usd(d.actAmtD)}` : ""} · pot {usd(d.potD)}{d.sc.nWay > 2 ? ` · ${d.sc.nWay}-way` : ""}{h.straddle && d.street === undefined ? " · straddled" : ""}</div>
+                        {d.g.verdict !== "best" && <div style={{ fontFamily: MONO, fontSize: 11, color: T.bone }}>Better: {d.g.best}</div>}
+                        {advice && <div style={{ fontFamily: MONO, fontSize: 11, color: T.dim, marginTop: 5, lineHeight: 1.5 }}>{advice}{d.sc.unk ? " (No specific read — assuming a typical low-stakes player: calls too much, raises only with it.)" : ""}</div>}
+                      </div>
+                    );
+                  })}
+                  {an.adjResultD != null && <div style={{ fontFamily: MONO, fontSize: 12, color: T.bone, marginTop: 8 }}>Actual {usd(h.result)} → played perfectly ≈ {usd(an.adjResultD)}</div>}
+                </div>
+              );
+            }
+            const sess = hands.length ? analyzeSession(hands) : null;
+            return (
+              <div>
+                <div style={{ display: "flex", gap: 4, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, padding: 4, marginBottom: 12 }}>
+                  {seg("Log", false, () => setLogMode("live"), "lm1")}
+                  {seg("Review", true, () => {}, "lm2")}
+                </div>
+                {!hands.length && <div style={G.dim}>No hands logged yet. Log key hands at the table, review them here after the session.</div>}
+                {sess && (
+                  <>
+                    <div style={{ display: "flex", gap: 10, padding: "4px 0 12px" }}>
+                      <Stat k="HANDS" v={hands.length} />
+                      <Stat k="ACCURACY" v={`${sess.acc}%`} color={sess.acc >= 80 ? T.club : T.heart} />
+                      <Stat k="EV LOST" v={usd(sess.evD)} color={T.heart} />
+                    </div>
+                    <div style={{ fontFamily: MONO, fontSize: 12, color: T.bone, marginBottom: 2 }}>Actual {usd(sess.netD)} → played perfectly ≈ {usd(sess.adjD)}</div>
+                    <div style={{ ...G.dim, marginBottom: 10 }}>You log your toughest spots, so this accuracy runs below your true rate — judge the trend, not the number.</div>
+                    {Object.keys(sess.leaks).length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        {Object.entries(sess.leaks).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => (
+                          <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: T.panel, border: `1px solid ${T.line}`, borderRadius: 10, padding: "9px 12px", marginBottom: 6 }}>
+                            <span style={{ fontFamily: MONO, fontSize: 11.5 }}>{(LEAKS[k] || { label: k }).label} <span style={{ color: T.dim }}>×{n}</span></span>
+                            <span className="ll-tap" onClick={() => { setFilter(LEAKS[k] ? LEAKS[k].drill : "all"); setCfg({ ...cfg, play: "drill" }); start(); }} style={{ fontFamily: DISP, fontWeight: 700, fontSize: 12, letterSpacing: 1, color: T.brass }}>DRILL →</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+                {hands.map((h, i) => {
+                  let an; try { an = analyzeHand(h); } catch (e) { an = { acc: 0, nMiss: 0, decisions: [] }; }
+                  const worst = an.decisions.some((d) => d.g.verdict === "miss") ? T.heart : an.decisions.some((d) => d.g.verdict === "ok") ? T.brass : T.club;
+                  return (
+                    <div key={i} className="ll-tap" onClick={() => setOpenHand(i)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: T.panel, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}>
+                      <span style={{ fontFamily: MONO, fontSize: 12.5 }}>
+                        <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: worst, marginRight: 8 }} />
+                        {holeStr(h.hero)} · {h.heroPos}{h.straddle ? (h.straddlePos === "BTN" ? " · str-b" : " · str") : ""}
+                      </span>
+                      <span style={{ fontFamily: MONO, fontSize: 12, color: (h.result || 0) >= 0 ? T.club : T.heart }}>{h.result != null ? usd(h.result) : "—"}</span>
+                    </div>
+                  );
+                })}
+                {hands.length > 0 && <div className="ll-tap" onClick={() => { setLiveHands([]); store.set(liveKey(), []); setOpenHand(null); }} style={{ ...G.dim, textAlign: "center", textDecoration: "underline", marginTop: 10 }}>clear logged hands</div>}
+              </div>
+            );
+          }
+          /* ---------- LIVE LOGGER (stealth) ---------- */
+          return (
+            <div>
+              <div style={{ display: "flex", gap: 4, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, padding: 4, marginBottom: 12 }}>
+                {seg("Log", true, () => {}, "lm3")}
+                {seg("Review", false, () => setLogMode("review"), "lm4")}
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={G.dim}>table</span>
+                <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span className="ll-tap" onClick={() => setLogN(Math.max(2, logN - 1))} style={G.chip}>−</span>
+                  <span style={{ fontFamily: MONO, fontSize: 13 }}>{logN}</span>
+                  <span className="ll-tap" onClick={() => setLogN(Math.min(10, logN + 1))} style={G.chip}>+</span>
+                </span>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 4 }}>
+                {posArr.map((pos, i) => (
+                  <span key={pos} className="ll-tap" onClick={() => { if (draft) setDraft({ ...draft, heroPos: pos }); else { const s = logSeats.slice(); s[i] = CYCLE[(CYCLE.indexOf(s[i]) + 1) % CYCLE.length]; setLogSeats(s); } }}
+                    style={{ ...G.chip, padding: "6px 8px", fontSize: 11, borderColor: draft && draft.heroPos === pos ? T.bone : T.line, background: draft && draft.heroPos === pos ? "#2A332E" : "#1B211E" }}>
+                    {pos} <b>{LETTER[logSeats[i]]}</b>
+                  </span>
+                ))}
+              </div>
+              <div style={{ ...G.dim, marginBottom: 10 }}>{draft ? "tap your seat to set position" : "tap a seat to set player type · ? = unknown"}</div>
+              {!draft && (
+                <div className="ll-tap" onClick={() => setDraft(newDraft())} style={{ textAlign: "center", fontFamily: DISP, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, padding: "13px", borderRadius: 12, background: "#232B27", border: `1px solid ${T.line}`, color: T.bone }}>+ NEW ENTRY</div>
+              )}
+              {draft && (
+                <div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", margin: "4px 0 8px" }}>
+                    <span className="ll-tap" onClick={() => setPadTarget(padTarget && padTarget.kind === "hero" ? null : { kind: "hero" })} style={{ ...G.chip, borderColor: padTarget && padTarget.kind === "hero" ? T.bone : T.line }}>
+                      me: {draft.hero.length ? draft.hero.map(cardTxt).join(" ") : "· ·"}
+                    </span>
+                    <span className="ll-tap" onClick={() => setPadTarget(padTarget && padTarget.kind === "board" ? null : { kind: "board" })} style={{ ...G.chip, borderColor: padTarget && padTarget.kind === "board" ? T.bone : T.line }}>
+                      board: {draft.board.length ? draft.board.map(cardTxt).join(" ") : "—"}
+                    </span>
+                    <span className="ll-tap" onClick={() => {
+                      if (!draft.straddle) setDraft({ ...draft, straddle: STAKES[cfg.stake].bb * 2, straddlePos: "UTG" });
+                      else if (draft.straddlePos === "UTG") setDraft({ ...draft, straddlePos: "BTN" });
+                      else setDraft({ ...draft, straddle: null, straddlePos: null });
+                    }} style={{ ...G.chip, color: draft.straddle ? T.bone : T.dim }}>
+                      str{draft.straddle ? ` ${draft.straddlePos === "BTN" ? "btn" : "utg"} ${draft.straddle}` : ""}
+                    </span>
+                    {draft.straddle && <span className="ll-tap" onClick={() => setDraft({ ...draft, straddle: draft.straddle + STAKES[cfg.stake].inc })} style={G.chip}>+</span>}
+                  </div>
+                  {padTarget && (padTarget.kind === "hero" || padTarget.kind === "board") && (
+                    <div style={{ background: "#151A18", border: `1px solid ${T.line}`, borderRadius: 10, padding: 8, marginBottom: 8 }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+                        {RKS.map((r) => <span key={r} className="ll-tap" onClick={() => setPadTarget({ ...padTarget, r })} style={{ ...G.chip, padding: "6px 9px", borderColor: padTarget.r === r ? T.bone : T.line }}>{RC[r]}</span>)}
+                      </div>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {["s", "h", "d", "c"].map((s) => <span key={s} className="ll-tap" onClick={() => { if (padTarget.r) { addCard({ r: padTarget.r, s }); setPadTarget({ kind: padTarget.kind }); } }} style={{ ...G.chip, padding: "6px 12px" }}>{s}</span>)}
+                        <span className="ll-tap" onClick={() => { if (padTarget.kind === "hero") setDraft({ ...draft, hero: draft.hero.slice(0, -1) }); else setDraft({ ...draft, board: draft.board.slice(0, -1) }); }} style={{ ...G.chip, marginLeft: "auto" }}>⌫</span>
+                      </div>
+                    </div>
+                  )}
+                  {["pre", "flop", "turn", "river"].map((street) => (
+                    <div key={street} style={{ margin: "6px 0" }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                        <span style={{ ...G.dim, width: 34 }}>{street}</span>
+                        <span style={{ fontFamily: MONO, fontSize: 11.5, color: T.bone, flex: 1 }}>{lineTxt(street) || "·"}</span>
+                        {draft.actions[street].length > 0 && <span className="ll-tap" onClick={() => setDraft({ ...draft, actions: { ...draft.actions, [street]: draft.actions[street].slice(0, -1) } })} style={{ ...G.dim }}>⌫</span>}
+                        <span className="ll-tap" onClick={() => { setPadTarget(null); setActSel(actSel && actSel.street === street ? null : { street, pos: null }); }} style={{ ...G.chip, padding: "3px 9px" }}>+</span>
+                      </div>
+                      {actSel && actSel.street === street && (
+                        <div style={{ background: "#151A18", border: `1px solid ${T.line}`, borderRadius: 10, padding: 8, marginTop: 5 }}>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+                            {posArr.map((pos) => <span key={pos} className="ll-tap" onClick={() => { if (padTarget && padTarget.kind !== "amt") setPadTarget(null); setActSel({ ...actSel, pos }); }} style={{ ...G.chip, padding: "5px 8px", fontSize: 10.5, borderColor: actSel.pos === pos ? T.bone : T.line }}>{pos}</span>)}
+                          </div>
+                          {actSel.pos && !padTarget && (
+                            <div style={{ display: "flex", gap: 4 }}>
+                              {[["f", "fold"], ["x", "check"], ["c", "call"]].map(([a, l]) => <span key={a} className="ll-tap" onClick={() => addAct(street, actSel.pos, a)} style={G.chip}>{l}</span>)}
+                              {[["b", "bet"], ["r", "raise"]].map(([a, l]) => <span key={a} className="ll-tap" onClick={() => setPadTarget({ kind: "amt", street, pos: actSel.pos, a, val: "" })} style={G.chip}>{l}</span>)}
+                            </div>
+                          )}
+                          {padTarget && padTarget.kind === "amt" && padTarget.street === street && (
+                            <div>
+                              <div style={{ fontFamily: MONO, fontSize: 13, margin: "6px 0" }}>{padTarget.pos} {padTarget.a === "b" ? "bets" : "raises to"} ${padTarget.val || "…"}</div>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 0].map((d) => <span key={d} className="ll-tap" onClick={() => setPadTarget({ ...padTarget, val: padTarget.val + d })} style={{ ...G.chip, padding: "6px 11px" }}>{d}</span>)}
+                                <span className="ll-tap" onClick={() => setPadTarget({ ...padTarget, val: padTarget.val.slice(0, -1) })} style={G.chip}>⌫</span>
+                                <span className="ll-tap" onClick={() => { if (padTarget.val) addAct(street, padTarget.pos, padTarget.a, +padTarget.val); }} style={{ ...G.chip, background: "#2A332E" }}>ok</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", margin: "10px 0 6px" }}>
+                    <span style={G.dim}>net</span>
+                    <span className="ll-tap" onClick={() => setDraft({ ...draft, result: -(draft.result || 0) })} style={G.chip}>{(draft.result || 0) < 0 ? "−" : "+"}</span>
+                    <span className="ll-tap" onClick={() => setPadTarget(padTarget && padTarget.kind === "res" ? null : { kind: "res", val: String(Math.abs(draft.result || "") || "") })} style={{ ...G.chip, minWidth: 56, textAlign: "center" }}>{draft.result != null ? Math.abs(draft.result) : "…"}</span>
+                  </div>
+                  {padTarget && padTarget.kind === "res" && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 0].map((d) => <span key={d} className="ll-tap" onClick={() => { const v = padTarget.val + d; setPadTarget({ ...padTarget, val: v }); setDraft({ ...draft, result: (draft.result || 0) < 0 ? -+v : +v }); }} style={{ ...G.chip, padding: "6px 11px" }}>{d}</span>)}
+                      <span className="ll-tap" onClick={() => { const v = padTarget.val.slice(0, -1); setPadTarget({ ...padTarget, val: v }); setDraft({ ...draft, result: v ? ((draft.result || 0) < 0 ? -+v : +v) : null }); }} style={G.chip}>⌫</span>
+                      <span className="ll-tap" onClick={() => setPadTarget(null)} style={{ ...G.chip, background: "#2A332E" }}>ok</span>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <span className="ll-tap" onClick={() => { setDraft(null); setPadTarget(null); setActSel(null); }} style={{ ...G.chip, flex: 1, textAlign: "center", color: T.dim }}>discard</span>
+                    <span className="ll-tap" onClick={() => { if (!saveDraft()) {} }} style={{ ...G.chip, flex: 2, textAlign: "center", background: draft.heroPos && draft.hero.length === 2 ? "#2A332E" : "#1B211E", color: draft.heroPos && draft.hero.length === 2 ? T.bone : T.dim, fontWeight: 700 }}>save</span>
+                  </div>
+                  <div style={{ ...G.dim, marginTop: 6 }}>only log who acted — everyone else is assumed folded · {liveHands.length} saved</div>
+                </div>
               )}
             </div>
           );
