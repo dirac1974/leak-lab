@@ -2823,15 +2823,25 @@ export default function App() {
   const [actSel, setActSel] = useState(null);     // {street, pos} awaiting action choice
   const [openHand, setOpenHand] = useState(null); // review detail index
   const [liveHands, setLiveHands] = useState(() => store.get("ll_live_" + (store.get("ll_current", null) || "guest"), []));
+  const [editIdx, setEditIdx] = useState(null); // storage index of the hand being edited
   const liveKey = () => "ll_live_" + (profile || "guest");
-  const newDraft = () => ({ t: Date.now(), nSeats: logN, stake: { label: STAKES[cfg.stake].label, bb: STAKES[cfg.stake].bb, sb: STAKES[cfg.stake].sb }, stack: STACK_OPTS[cfg.stack] * STAKES[cfg.stake].bb, straddle: null, seats: logSeats.slice(0, logN), heroPos: null, hero: [], board: [], actions: { pre: [], flop: [], turn: [], river: [] }, result: null });
+  const newDraft = () => ({ cid: Date.now() + "-" + ((Math.random() * 1e6) | 0), t: Date.now(), nSeats: logN, stake: { label: STAKES[cfg.stake].label, bb: STAKES[cfg.stake].bb, sb: STAKES[cfg.stake].sb }, stack: STACK_OPTS[cfg.stack] * STAKES[cfg.stake].bb, straddle: null, seats: logSeats.slice(0, logN), heroPos: null, hero: [], board: [], actions: { pre: [], flop: [], turn: [], river: [] }, result: null });
+  // Load a saved hand back into the entry form so missing details can be added later.
+  const editHand = (storIdx) => {
+    const h = liveHands[storIdx]; if (!h) return;
+    setLogN(h.nSeats);
+    const s = logSeats.slice(); (h.seats || []).forEach((id, i) => { s[i] = id || "unk"; }); setLogSeats(s);
+    setDraft(JSON.parse(JSON.stringify(h)));
+    setEditIdx(storIdx); setOpenHand(null); setLogMode("live"); setPadTarget(null); setActSel(null);
+  };
   const saveDraft = () => {
     if (!draft || !draft.heroPos || draft.hero.length !== 2) return false;
-    const h = { ...draft, seats: logSeats.slice(0, logN) };
-    const all = [...liveHands, h];
+    const h = { ...draft, rev: editIdx != null ? ((draft.rev || 0) + 1) : (draft.rev || 0), seats: logSeats.slice(0, logN) };
+    const all = editIdx != null ? liveHands.map((x, i) => (i === editIdx ? h : x)) : [...liveHands, h];
     setLiveHands(all); store.set(liveKey(), all);
+    // Cloud keeps every revision (same cid, higher rev) — the latest rev wins on any future read.
     if (CLOUD_ON && cloud) sbInsertHand(cloud.at, h).catch(() => {});
-    setDraft(null); setPadTarget(null); setActSel(null);
+    setDraft(null); setPadTarget(null); setActSel(null); setEditIdx(null);
     return true;
   };
 
@@ -3602,7 +3612,10 @@ export default function App() {
               try { an = analyzeHand(h); } catch (e) { an = { decisions: [], acc: 0, evLostD: 0, adjResultD: null, error: true }; }
               return (
                 <div>
-                  <div className="ll-tap" onClick={() => setOpenHand(null)} style={{ ...G.dim, marginBottom: 10 }}>← all hands</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                    <span className="ll-tap" onClick={() => setOpenHand(null)} style={G.dim}>← all hands</span>
+                    <span className="ll-tap" onClick={() => editHand(liveHands.length - 1 - openHand)} style={{ ...G.dim, color: T.brass }}>✎ edit hand</span>
+                  </div>
                   <div style={{ fontFamily: DISP, fontWeight: 700, fontSize: 18 }}>{holeStr(h.hero)} · {h.heroPos}{h.straddle ? ` · ${h.straddlePos === "BTN" ? "button" : "UTG"} straddle ${usd(h.straddle)}` : ""}</div>
                   <div style={{ ...G.dim, marginBottom: 6 }}>{h.stake.label} · {h.nSeats} players{h.board.length ? ` · board ${holeStr(h.board)}` : ""} · net {h.result != null ? usd(h.result) : "—"}</div>
                   {an.error && <div style={{ ...G.dim, color: T.heart }}>Couldn't fully parse this hand — check the action line.</div>}
@@ -3663,7 +3676,10 @@ export default function App() {
                         <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: worst, marginRight: 8 }} />
                         {holeStr(h.hero)} · {h.heroPos}{h.straddle ? (h.straddlePos === "BTN" ? " · str-b" : " · str") : ""}
                       </span>
-                      <span style={{ fontFamily: MONO, fontSize: 12, color: (h.result || 0) >= 0 ? T.club : T.heart }}>{h.result != null ? usd(h.result) : "—"}</span>
+                      <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                        <span style={{ fontFamily: MONO, fontSize: 12, color: (h.result || 0) >= 0 ? T.club : T.heart }}>{h.result != null ? usd(h.result) : "—"}</span>
+                        <span className="ll-tap" onClick={(e) => { e.stopPropagation(); editHand(liveHands.length - 1 - i); }} style={{ ...G.dim, padding: "2px 4px" }}>✎</span>
+                      </span>
                     </div>
                   );
                 })}
@@ -3694,7 +3710,7 @@ export default function App() {
                   </span>
                 ))}
               </div>
-              <div style={{ ...G.dim, marginBottom: 10 }}>{draft ? "tap your seat to set position" : "tap a seat to set player type · ? = unknown"}</div>
+              <div style={{ ...G.dim, marginBottom: 10 }}>{editIdx != null ? "editing a saved hand — add or change anything, then update" : draft ? "tap your seat to set position" : "tap a seat to set player type · ? = unknown"}</div>
               {!draft && (
                 <div className="ll-tap" onClick={() => setDraft(newDraft())} style={{ textAlign: "center", fontFamily: DISP, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, padding: "13px", borderRadius: 12, background: "#232B27", border: `1px solid ${T.line}`, color: T.bone }}>+ NEW ENTRY</div>
               )}
@@ -3773,8 +3789,8 @@ export default function App() {
                     </div>
                   )}
                   <div style={{ display: "flex", gap: 8 }}>
-                    <span className="ll-tap" onClick={() => { setDraft(null); setPadTarget(null); setActSel(null); }} style={{ ...G.chip, flex: 1, textAlign: "center", color: T.dim }}>discard</span>
-                    <span className="ll-tap" onClick={() => { if (!saveDraft()) {} }} style={{ ...G.chip, flex: 2, textAlign: "center", background: draft.heroPos && draft.hero.length === 2 ? "#2A332E" : "#1B211E", color: draft.heroPos && draft.hero.length === 2 ? T.bone : T.dim, fontWeight: 700 }}>save</span>
+                    <span className="ll-tap" onClick={() => { setDraft(null); setPadTarget(null); setActSel(null); setEditIdx(null); }} style={{ ...G.chip, flex: 1, textAlign: "center", color: T.dim }}>{editIdx != null ? "cancel" : "discard"}</span>
+                    <span className="ll-tap" onClick={() => { if (!saveDraft()) {} }} style={{ ...G.chip, flex: 2, textAlign: "center", background: draft.heroPos && draft.hero.length === 2 ? "#2A332E" : "#1B211E", color: draft.heroPos && draft.hero.length === 2 ? T.bone : T.dim, fontWeight: 700 }}>{editIdx != null ? "update" : "save"}</span>
                   </div>
                   <div style={{ ...G.dim, marginTop: 6 }}>only log who acted — everyone else is assumed folded · {liveHands.length} saved</div>
                 </div>
