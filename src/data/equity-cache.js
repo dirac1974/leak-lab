@@ -2,4 +2,4 @@
 // Baked from ll_equity_cache so the client ships them with zero runtime fetch, like
 // JAM_EQ. Consulted by boardEquity() only when EQUITY_CACHE_LIVE is true.
 // Regenerate after the aggregator confirms new rows: npm run bake:equity
-export const EQUITY_CACHE = {"b1|lag|flop|bwy|6":0.3137,"b1|maniac|flop|wet|3":0.6994,"b1|nit|flop|low|7":0.0996,"b1|nit|flop|wet|5":0.0563,"b1|station|flop|paired|7":0.1103,"b1|station|flop|wet|2":0.3206,"b1|station|flop|wet|3":0.2718,"b1|station|flop|wet|7":0.1944,"b1|station|turn|paired|8":0.0578,"b1|station|turn|wet|5":0.1011};
+export const EQUITY_CACHE = {"b1|lag|flop|bwy|6":0.314,"b1|maniac|flop|wet|3":0.6978,"b1|nit|flop|low|7":0.098,"b1|nit|flop|wet|5":0.0566,"b1|station|flop|paired|7":0.1097,"b1|station|flop|wet|2":0.3222,"b1|station|flop|wet|3":0.2703,"b1|station|flop|wet|7":0.1956,"b1|station|turn|paired|8":0.0571,"b1|station|turn|wet|5":0.1003};
